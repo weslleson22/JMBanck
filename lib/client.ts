@@ -178,7 +178,14 @@ export function getStoredDemoUser(): DemoUser | null {
   try {
     const raw = localStorage.getItem(DEMO_STORAGE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as DemoUser;
+    const parsed = JSON.parse(raw) as DemoUser;
+    if (parsed?.role && !document.cookie.includes(`jmbank_role=${parsed.role}`)) {
+      document.cookie = `jmbank_role=${parsed.role}; path=/; max-age=604800; SameSite=Lax`;
+      if (parsed.email) {
+        document.cookie = `jmbank_email=${encodeURIComponent(parsed.email)}; path=/; max-age=604800; SameSite=Lax`;
+      }
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -188,12 +195,12 @@ export function setStoredDemoUser(user: DemoUser | null) {
   if (typeof window === 'undefined') return;
   if (!user) {
     localStorage.removeItem(DEMO_STORAGE_KEY);
-    document.cookie = 'jmbank_role=; path=/; max-age=0';
-    document.cookie = 'jmbank_email=; path=/; max-age=0';
+    document.cookie = 'jmbank_role=; path=/; max-age=0; SameSite=Lax';
+    document.cookie = 'jmbank_email=; path=/; max-age=0; SameSite=Lax';
   } else {
     localStorage.setItem(DEMO_STORAGE_KEY, JSON.stringify(user));
-    document.cookie = `jmbank_role=${user.role}; path=/; max-age=86400`;
-    document.cookie = `jmbank_email=${encodeURIComponent(user.email)}; path=/; max-age=86400`;
+    document.cookie = `jmbank_role=${user.role}; path=/; max-age=604800; SameSite=Lax`;
+    document.cookie = `jmbank_email=${encodeURIComponent(user.email)}; path=/; max-age=604800; SameSite=Lax`;
   }
   window.dispatchEvent(new Event('jmbank-auth-change'));
 }

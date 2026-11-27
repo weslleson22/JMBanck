@@ -121,3 +121,4 @@ export async function DELETE(
     return NextResponse.json({ message: e?.message ?? 'Erro ao excluir série' }, { status: 500 });
   }
 }
+

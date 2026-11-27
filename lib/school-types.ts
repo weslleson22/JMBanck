@@ -70,3 +70,4 @@ export interface SchoolStructureDb {
   teachers: TeacherRecord[];
   students: StudentRecord[];
 }
+

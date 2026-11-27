@@ -1,6 +1,6 @@
 'use client';
 
-import { supabaseClient, getStoredDemoUser } from '@/lib/client';
+import { getStoredDemoUser } from '@/lib/client';
 import { useEffect, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -129,22 +129,24 @@ export default function CarometroPage() {
     (async () => {
       setLoading(true);
       try {
-        const dbPhotos = await fetchAllStudentPhotos();
+        const [dbPhotos, clsRes, stuRes] = await Promise.all([
+          fetchAllStudentPhotos(),
+          fetch('/api/classes', { cache: 'no-store' }),
+          fetch('/api/students', { cache: 'no-store' }),
+        ]);
         setPhotosMap(dbPhotos);
 
-        const supabase = supabaseClient();
-        const [{ data: classData }, { data: studentData }] = await Promise.all([
-          supabase.from('classes').select('id, name'),
-          supabase
-            .from('students')
-            .select('id, enrollment_number, name, class_id, status, photo_path'),
-        ]);
-
-        if (classData?.length) {
-          setClasses(classData);
+        if (clsRes.ok) {
+          const classData = await clsRes.json();
+          if (Array.isArray(classData) && classData.length > 0) {
+            setClasses(classData);
+          }
         }
-        if (studentData?.length) {
-          setStudents(studentData as Student[]);
+        if (stuRes.ok) {
+          const studentData = await stuRes.json();
+          if (Array.isArray(studentData) && studentData.length > 0) {
+            setStudents(studentData as Student[]);
+          }
         }
       } catch {
         // Keep demo students + saved photos

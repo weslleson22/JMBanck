@@ -118,3 +118,4 @@ export async function DELETE(
     return NextResponse.json({ message: e?.message ?? 'Erro ao excluir escola' }, { status: 500 });
   }
 }
+

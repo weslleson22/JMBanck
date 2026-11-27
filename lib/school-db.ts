@@ -239,3 +239,4 @@ export async function writeSchoolStructureDb(data: SchoolStructureDb): Promise<v
   await fs.mkdir(DATA_DIR, { recursive: true });
   await fs.writeFile(STRUCTURE_DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
 }
+
