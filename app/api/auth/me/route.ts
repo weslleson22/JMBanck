@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { checkDatabaseHealth } from '@/lib/db-health';
+import { validateDatabaseEnv } from '@/lib/env';
 import { formatDbError } from '@/lib/prisma-errors';
 import { getSessionFromCookies, SESSION_COOKIE_NAME } from '@/lib/auth-session';
 import {
@@ -14,27 +14,36 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const health = await checkDatabaseHealth();
-    if (!health.ok) {
+    // 1. Validate env vars in-memory (0 DB connections)
+    const env = validateDatabaseEnv();
+    if (!env.ok) {
       return NextResponse.json(
         {
           authenticated: false,
           code: 'DB_CONNECTION_ERROR',
-          message: health.errorMessage,
-          hint: health.hint,
-          health,
+          message: `Variáveis de ambiente ausentes ou inválidas: ${env.missingRequired.join(', ')}.`,
+          hint: 'Configure DATABASE_URL no painel de deploy (ex.: Vercel) e reinicie a aplicação.',
         },
         { status: 503 }
       );
     }
 
+    // 2. Verify signed cookie before touching the database
     const session = await getSessionFromCookies();
     if (!session?.sub) {
       return NextResponse.json({ authenticated: false }, { status: 401 });
     }
 
+    // 3. Single lightweight query validates BOTH DB connectivity AND live user status/role
     const dbUser = await prisma.user.findUnique({
       where: { id: session.sub },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        status: true,
+      },
     });
 
     if (!dbUser) {
@@ -76,7 +85,7 @@ export async function GET() {
     return NextResponse.json(
       {
         authenticated: false,
-        code: formatted.code,
+        code: formatted.httpStatus === 503 ? 'DB_CONNECTION_ERROR' : formatted.code,
         message: formatted.message,
         hint: formatted.hint,
       },

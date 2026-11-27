@@ -5,6 +5,18 @@ import { dbErrorResponse } from '@/lib/prisma-errors';
 
 export const dynamic = 'force-dynamic';
 
+interface AdminCountsRow {
+  total_schools: number;
+  total_students: number;
+  total_teachers: number;
+  total_classes: number;
+  total_missions: number;
+  total_rewards: number;
+  total_balance: number;
+  total_earned: number;
+  total_spent: number;
+}
+
 export async function GET() {
   try {
     try {
@@ -16,64 +28,50 @@ export async function GET() {
       );
     }
 
-    const [
-      totalSchools,
-      totalStudents,
-      totalTeachers,
-      totalClasses,
-      totalMissions,
-      totalRewards,
-      walletAgg,
-      classesWithStudents,
-    ] = await Promise.all([
-      prisma.school.count(),
-      prisma.student.count(),
-      prisma.teacher.count(),
-      prisma.classRoom.count(),
-      prisma.mission.count(),
-      prisma.reward.count(),
-      prisma.wallet.aggregate({
-        _sum: {
-          balance: true,
-          total_earned: true,
-          total_spent: true,
-        },
-      }),
-      prisma.classRoom.findMany({
-        include: {
-          students: {
-            include: {
-              wallet: { select: { balance: true } },
-            },
-          },
-        },
-      }),
-    ]);
+    // Consolidates 7 count/aggregate queries into 1 single SQL query (minimal DB load & connections)
+    const [summaryRow] = await prisma.$queryRaw<AdminCountsRow[]>`
+      SELECT
+        (SELECT COUNT(*)::int FROM public.schools) AS total_schools,
+        (SELECT COUNT(*)::int FROM public.students) AS total_students,
+        (SELECT COUNT(*)::int FROM public.teachers) AS total_teachers,
+        (SELECT COUNT(*)::int FROM public.classes) AS total_classes,
+        (SELECT COUNT(*)::int FROM public.missions) AS total_missions,
+        (SELECT COUNT(*)::int FROM public.rewards) AS total_rewards,
+        COALESCE((SELECT SUM(balance)::float8 FROM public.wallets), 0) AS total_balance,
+        COALESCE((SELECT SUM(total_earned)::float8 FROM public.wallets), 0) AS total_earned,
+        COALESCE((SELECT SUM(total_spent)::float8 FROM public.wallets), 0) AS total_spent
+    `;
 
-    const totalCoinsEmitted = Number(walletAgg._sum.total_earned ?? 0);
-    const totalCoinsRedeemed = Number(walletAgg._sum.total_spent ?? 0);
-    const totalCoinsBalance = Number(walletAgg._sum.balance ?? 0);
-
-    const topClasses = classesWithStudents
-      .map((cls) => ({
-        name: cls.name,
-        studentsCount: cls.students.length,
-        coins: cls.students.reduce((sum, s) => sum + Number(s.wallet?.balance ?? 0), 0),
-      }))
-      .sort((a, b) => b.coins - a.coins || b.studentsCount - a.studentsCount)
-      .slice(0, 6);
+    const topClassesRows = await prisma.$queryRaw<
+      { name: string; students_count: number; coins: number }[]
+    >`
+      SELECT
+        c.name,
+        COUNT(s.id)::int AS students_count,
+        COALESCE(SUM(w.balance)::float8, 0) AS coins
+      FROM public.classes c
+      LEFT JOIN public.students s ON s.class_id = c.id
+      LEFT JOIN public.wallets w ON w.student_id = s.id
+      GROUP BY c.id, c.name
+      ORDER BY coins DESC, students_count DESC
+      LIMIT 6
+    `;
 
     return NextResponse.json({
-      totalSchools,
-      totalStudents,
-      totalTeachers,
-      totalClasses,
-      totalCoinsEmitted,
-      totalCoinsRedeemed,
-      totalCoinsBalance,
-      totalMissions,
-      totalRewards,
-      topClasses,
+      totalSchools: Number(summaryRow?.total_schools ?? 0),
+      totalStudents: Number(summaryRow?.total_students ?? 0),
+      totalTeachers: Number(summaryRow?.total_teachers ?? 0),
+      totalClasses: Number(summaryRow?.total_classes ?? 0),
+      totalCoinsEmitted: Number(summaryRow?.total_earned ?? 0),
+      totalCoinsRedeemed: Number(summaryRow?.total_spent ?? 0),
+      totalCoinsBalance: Number(summaryRow?.total_balance ?? 0),
+      totalMissions: Number(summaryRow?.total_missions ?? 0),
+      totalRewards: Number(summaryRow?.total_rewards ?? 0),
+      topClasses: topClassesRows.map((row) => ({
+        name: row.name,
+        studentsCount: Number(row.students_count ?? 0),
+        coins: Number(row.coins ?? 0),
+      })),
     });
   } catch (e: any) {
     return dbErrorResponse(e, 'dashboard administrativo');

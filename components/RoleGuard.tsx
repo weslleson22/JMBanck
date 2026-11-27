@@ -1,8 +1,9 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  getStoredDemoUser,
   setStoredDemoUser,
   canAccessRoute,
   ROLE_HOME_PATH,
@@ -18,8 +19,24 @@ export default function RoleGuard({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<DemoUser | null>(null);
   const [checking, setChecking] = useState(true);
   const [dbError, setDbError] = useState<DbErrorState | null>(null);
+  const lastVerifiedAtRef = useRef<number>(0);
 
-  const verify = async () => {
+  const SESSION_REVALIDATE_MS = 3 * 60 * 1000; // 3 minutes (proxy.ts already checks signed cookie server-side)
+
+  const verify = async (force = false) => {
+    if (
+      !force &&
+      lastVerifiedAtRef.current > 0 &&
+      Date.now() - lastVerifiedAtRef.current < SESSION_REVALIDATE_MS
+    ) {
+      const cached = getStoredDemoUser();
+      if (cached) {
+        setUser(cached);
+        setChecking(false);
+        return;
+      }
+    }
+
     setChecking(true);
     setDbError(null);
     try {
@@ -27,6 +44,7 @@ export default function RoleGuard({ children }: { children: React.ReactNode }) {
       const json = await res.json().catch(() => ({}));
 
       if (res.status === 503 || json?.code === 'DB_CONNECTION_ERROR') {
+        lastVerifiedAtRef.current = 0;
         setUser(null);
         setStoredDemoUser(null);
         setDbError({
@@ -46,13 +64,16 @@ export default function RoleGuard({ children }: { children: React.ReactNode }) {
           role: json.user.role,
           roleLabel: json.user.roleLabel,
         };
+        lastVerifiedAtRef.current = Date.now();
         setUser(verifiedUser);
         setStoredDemoUser(verifiedUser);
       } else {
+        lastVerifiedAtRef.current = 0;
         setUser(null);
         setStoredDemoUser(null);
       }
     } catch {
+      lastVerifiedAtRef.current = 0;
       setUser(null);
       setDbError({
         message: 'Falha de rede ao verificar sessão com o servidor.',
@@ -66,10 +87,11 @@ export default function RoleGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (pathname === '/login') {
+      lastVerifiedAtRef.current = 0;
       setChecking(false);
       return;
     }
-    verify();
+    verify(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
@@ -90,7 +112,7 @@ export default function RoleGuard({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex flex-1 items-center justify-center p-6 sm:p-8">
         <div className="max-w-xl w-full space-y-4">
-          <DatabaseErrorBanner error={dbError} onRetry={verify} loading={checking} />
+          <DatabaseErrorBanner error={dbError} onRetry={() => verify(true)} loading={checking} />
           <div className="flex justify-center">
             <Link
               href="/login"

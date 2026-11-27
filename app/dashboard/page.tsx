@@ -86,7 +86,7 @@ export default function DashboardHubPage() {
         {visibleDashboards.map((d) => {
           const Icon = d.icon;
           return (
-            <Link key={d.href} href={d.href} className="group block h-full">
+            <Link key={d.href} href={d.href} prefetch={false} className="group block h-full">
               <Card className="h-full flex flex-col justify-between transition-all group-hover:border-blue-400 group-hover:shadow-md">
                 <CardHeader className="p-4 sm:p-6 space-y-3">
                   <div className="flex items-center justify-between">

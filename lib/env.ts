@@ -86,7 +86,11 @@ export function validateDatabaseEnv(): EnvValidationResult {
   } else {
     try {
       const parsed = new URL(databaseUrl);
-      if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+      if (
+        parsed.protocol !== 'postgres:' &&
+        parsed.protocol !== 'postgresql:' &&
+        parsed.protocol !== 'prisma+postgres:'
+      ) {
         throw new Error('Protocolo inválido');
       }
       databaseHost = parsed.host;

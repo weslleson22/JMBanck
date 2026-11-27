@@ -29,7 +29,6 @@ import {
   getStoredDemoUser,
   setStoredDemoUser,
   canAccessRoute,
-  ROLE_LABELS,
   type DemoUser,
 } from '@/lib/client';
 import type { Role } from '@/lib/role';
@@ -174,32 +173,9 @@ export default function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
-    const syncUser = async () => {
-      const demo = getStoredDemoUser();
-      if (demo) {
-        setCurrentUser(demo);
-        return;
-      }
-      try {
-        const res = await fetch('/api/auth/me', { cache: 'no-store' });
-        const json = await res.json().catch(() => ({}));
-        if (res.ok && json?.authenticated && json?.user) {
-          const userRole = (json.user.role as Role) ?? 'student';
-          const verified: DemoUser = {
-            id: json.user.id,
-            email: json.user.email ?? '',
-            name: json.user.name ?? 'Usuário',
-            role: userRole,
-            roleLabel: json.user.roleLabel ?? ROLE_LABELS[userRole] ?? 'Autenticado',
-          };
-          setCurrentUser(verified);
-          setStoredDemoUser(verified);
-        } else {
-          setCurrentUser(null);
-        }
-      } catch {
-        setCurrentUser(null);
-      }
+    // RoleGuard performs the single authoritative /api/auth/me check and dispatches jmbank-auth-change
+    const syncUser = () => {
+      setCurrentUser(getStoredDemoUser());
     };
 
     syncUser();
@@ -260,6 +236,7 @@ export default function Sidebar() {
         <div className="flex items-center justify-between px-2 py-1">
           <Link
             href="/"
+            prefetch={false}
             onClick={() => isMobile && setMobileOpen(false)}
             className="flex items-center gap-3"
           >
@@ -304,6 +281,7 @@ export default function Sidebar() {
                     <Link
                       key={item.href}
                       href={item.href}
+                      prefetch={false}
                       onClick={() => isMobile && setMobileOpen(false)}
                       className={cn(
                         'flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13.5px] leading-snug font-medium transition-colors',
@@ -357,6 +335,7 @@ export default function Sidebar() {
         ) : (
           <Link
             href="/login"
+            prefetch={false}
             onClick={() => isMobile && setMobileOpen(false)}
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 py-2.5 text-xs font-medium text-white hover:bg-blue-700 shadow-sm"
           >

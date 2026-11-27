@@ -48,10 +48,29 @@ const CORE_TABLES = [
   'rewards',
 ] as const;
 
-export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
+// Short TTL cache (30s) ONLY for healthy results in production warm containers
+// to avoid hitting information_schema on every /api/health + /api/auth/login pair.
+// Failures are NEVER cached so errors surface and recover immediately.
+let cachedHealthyReport: { expiresAt: number; report: DatabaseHealthReport } | null = null;
+const HEALTH_CACHE_TTL_MS = 30_000;
+
+export async function checkDatabaseHealth(options?: { bypassCache?: boolean }): Promise<DatabaseHealthReport> {
   const started = Date.now();
   const checkedAt = new Date().toISOString();
   const env = validateDatabaseEnv();
+
+  if (
+    env.isProduction &&
+    !options?.bypassCache &&
+    cachedHealthyReport &&
+    cachedHealthyReport.expiresAt > Date.now()
+  ) {
+    return {
+      ...cachedHealthyReport.report,
+      checkedAt,
+      latencyMs: 0,
+    };
+  }
 
   if (!env.ok || !env.databaseUrl) {
     return {
@@ -72,30 +91,8 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
     };
   }
 
-  // 1. Test PostgreSQL connectivity via Prisma
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-  } catch (err: any) {
-    const formatted = formatDbError(err, 'PostgreSQL (Prisma)');
-    return {
-      ok: false,
-      checkedAt,
-      environment: env.environment,
-      isProduction: env.isProduction,
-      latencyMs: Date.now() - started,
-      databaseHost: env.databaseHost,
-      supabaseHost: env.databaseHost,
-      envVars: env.checks,
-      warnings: env.warnings,
-      tables: [],
-      missingTables: [],
-      errorCode: formatted.code,
-      errorMessage: formatted.message,
-      hint: formatted.hint,
-    };
-  }
-
-  // 2. Check that all core tables exist in public schema
+  // Single lightweight query validates BOTH live PostgreSQL connectivity AND all 10 tables
+  // using only 1 database connection (avoids exhausting connection limits in serverless deploys).
   let existingTableSet = new Set<string>();
   try {
     const rows = await prisma.$queryRaw<{ table_name: string }[]>`
@@ -105,7 +102,7 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
     `;
     existingTableSet = new Set(rows.map((r) => r.table_name));
   } catch (err: any) {
-    const formatted = formatDbError(err, 'information_schema.tables');
+    const formatted = formatDbError(err, 'PostgreSQL (Prisma)');
     return {
       ok: false,
       checkedAt,
@@ -151,24 +148,9 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
     };
   }
 
-  // 3. Collect real table counts
-  const counts = await Promise.all([
-    prisma.school.count(),
-    prisma.academicYear.count(),
-    prisma.gradeLevel.count(),
-    prisma.classRoom.count(),
-    prisma.user.count(),
-    prisma.teacher.count(),
-    prisma.student.count(),
-    prisma.wallet.count(),
-    prisma.mission.count(),
-    prisma.reward.count(),
-  ]);
-
-  const tableResults: TableHealthStatus[] = CORE_TABLES.map((table, i) => ({
+  const tableResults: TableHealthStatus[] = CORE_TABLES.map((table) => ({
     table,
     ok: true,
-    count: counts[i],
   }));
 
   const warnings = [...env.warnings];
@@ -189,7 +171,7 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
     }
   }
 
-  return {
+  const healthyReport: DatabaseHealthReport = {
     ok: true,
     checkedAt,
     environment: env.environment,
@@ -206,4 +188,13 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
     errorMessage: null,
     hint: null,
   };
+
+  if (env.isProduction) {
+    cachedHealthyReport = {
+      expiresAt: Date.now() + HEALTH_CACHE_TTL_MS,
+      report: healthyReport,
+    };
+  }
+
+  return healthyReport;
 }

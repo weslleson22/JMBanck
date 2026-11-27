@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
@@ -5,17 +6,25 @@ import { dbErrorResponse } from '@/lib/prisma-errors';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     const students = await prisma.student.findMany({
       where: { photo_path: { not: null } },
       select: { id: true, photo_path: true, created_at: true },
+      orderBy: { id: 'asc' },
     });
 
+    const hash = crypto.createHash('sha1');
     const photos: Record<string, { studentId: string; photoDataUrl: string; updatedAt: string }> =
       {};
+
     for (const row of students) {
       if (row.photo_path) {
+        hash.update(row.id);
+        hash.update(':');
+        hash.update(String(row.photo_path.length));
+        hash.update(':');
+        hash.update(row.photo_path.slice(-32));
         photos[row.id] = {
           studentId: row.id,
           photoDataUrl: row.photo_path,
@@ -24,7 +33,18 @@ export async function GET() {
       }
     }
 
-    return NextResponse.json({ photos });
+    const etag = `W/"${hash.digest('hex')}"`;
+    const ifNoneMatch = req.headers.get('if-none-match');
+    const cacheHeaders = {
+      ETag: etag,
+      'Cache-Control': 'private, max-age=60, stale-while-revalidate=300',
+    };
+
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      return new NextResponse(null, { status: 304, headers: cacheHeaders });
+    }
+
+    return NextResponse.json({ photos }, { headers: cacheHeaders });
   } catch (e: any) {
     return dbErrorResponse(e, 'fotos do carômetro (students.photo_path)');
   }
@@ -53,9 +73,9 @@ export async function POST(req: Request) {
     if (!photoDataUrl || typeof photoDataUrl !== 'string' || !photoDataUrl.startsWith('data:image/')) {
       return NextResponse.json({ message: 'Imagem inválida' }, { status: 400 });
     }
-    if (photoDataUrl.length > 5 * 1024 * 1024) {
+    if (photoDataUrl.length > 500 * 1024) {
       return NextResponse.json(
-        { message: 'Imagem muito grande. Use uma foto de até 3MB.' },
+        { message: 'Imagem compactada muito grande. Use uma foto menor (máx. 500KB após compressão).' },
         { status: 413 }
       );
     }

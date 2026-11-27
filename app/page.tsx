@@ -179,7 +179,7 @@ export default function HomePage() {
             {allowedDashboards.map((card) => {
               const Icon = card.icon;
               return (
-                <Link key={card.href} href={card.href} className="group block">
+                <Link key={card.href} href={card.href} prefetch={false} className="group block">
                   <Card className="h-full transition-all group-hover:border-blue-300 group-hover:shadow-md">
                     <CardHeader className="space-y-2.5 sm:space-y-3 p-4 sm:p-5">
                       <div className="flex items-center justify-between">
@@ -217,7 +217,7 @@ export default function HomePage() {
             {allowedModules.map((mod) => {
               const Icon = mod.icon;
               return (
-                <Link key={mod.href} href={mod.href} className="group block">
+                <Link key={mod.href} href={mod.href} prefetch={false} className="group block">
                   <Card className="h-full transition-all group-hover:border-slate-300 group-hover:shadow-sm">
                     <CardContent className="p-4 sm:p-5 flex items-start gap-3 sm:gap-4">
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-700 group-hover:bg-blue-600 group-hover:text-white transition-colors">

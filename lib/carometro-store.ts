@@ -33,7 +33,9 @@ function setCachedStudentPhotos(photos: Record<string, StudentPhotoRecord>) {
  */
 export async function fetchAllStudentPhotos(): Promise<Record<string, StudentPhotoRecord>> {
   try {
-    const res = await fetch('/api/carometro/photos', { cache: 'no-store' });
+    // Usa `no-cache` (em vez de `no-store`) para permitir revalidação por ETag -> HTTP 304
+    // evitando transferir novamente todas as fotos base64 na Vercel (Fast Origin Transfer).
+    const res = await fetch('/api/carometro/photos', { cache: 'no-cache' });
     if (res.ok) {
       const json = await res.json();
       const serverPhotos = (json.photos ?? {}) as Record<string, StudentPhotoRecord>;
@@ -43,14 +45,14 @@ export async function fetchAllStudentPhotos(): Promise<Record<string, StudentPho
   } catch {
     // Handled by caller via API status
   }
-  return {};
+  return getCachedStudentPhotos();
 }
 
 /**
- * Compresses and resizes an uploaded image file into a compact JPEG Data URL (max 400x400)
- * so it saves fast and reliably in the database.
+ * Compresses and resizes an uploaded image file into a compact JPEG Data URL (max 320x320)
+ * so it saves fast and minimizes database & Fast Origin Transfer bandwidth.
  */
-export function fileToCompressedDataUrl(file: File, maxSize = 400): Promise<string> {
+export function fileToCompressedDataUrl(file: File, maxSize = 320): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Falha ao ler arquivo de imagem'));
@@ -79,7 +81,7 @@ export function fileToCompressedDataUrl(file: File, maxSize = 400): Promise<stri
           return;
         }
         ctx.drawImage(img, 0, 0, width, height);
-        const compressed = canvas.toDataURL('image/jpeg', 0.85);
+        const compressed = canvas.toDataURL('image/jpeg', 0.75);
         resolve(compressed);
       };
       img.src = reader.result as string;

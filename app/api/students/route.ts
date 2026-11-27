@@ -51,9 +51,30 @@ function formatStudent(s: any) {
 
 export async function GET() {
   try {
+    // Exclui o campo base64 `photo_path` da listagem para evitar duplicação de tráfego
+    // (Fast Origin Transfer na Vercel) — as fotos são carregadas com ETag/304 via /api/carometro/photos.
     const students = await prisma.student.findMany({
-      include: {
-        user: true,
+      select: {
+        id: true,
+        user_id: true,
+        class_id: true,
+        name: true,
+        email: true,
+        enrollment_number: true,
+        guardian_name: true,
+        guardian_contact: true,
+        birth_date: true,
+        lgpd_consent: true,
+        status: true,
+        created_at: true,
+        user: {
+          select: {
+            email: true,
+            name: true,
+            status: true,
+            password_hash: true,
+          },
+        },
         classRoom: { select: { id: true, name: true } },
       },
       orderBy: { name: 'asc' },
