@@ -57,7 +57,10 @@ export function getSupabasePublicKey(): string | null {
 }
 
 export function getSupabaseServiceRoleKey(): string | null {
-  const raw = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  const raw = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY
+  )?.trim();
   return raw ? raw : null;
 }
 
@@ -155,10 +158,16 @@ export function validateSupabaseEnv(): EnvValidationResult {
     });
   }
 
-  // 3. SUPABASE_SERVICE_ROLE_KEY (server-side admin operations)
+  // 3. SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY (server-side admin operations)
+  const serviceKeyVarName = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+    ? 'SUPABASE_SERVICE_ROLE_KEY'
+    : process.env.SUPABASE_SECRET_KEY?.trim()
+      ? 'SUPABASE_SECRET_KEY'
+      : 'SUPABASE_SERVICE_ROLE_KEY (ou SUPABASE_SECRET_KEY)';
+
   if (!serviceKey) {
     checks.push({
-      name: 'SUPABASE_SERVICE_ROLE_KEY',
+      name: serviceKeyVarName,
       required: false,
       configured: false,
       valid: false,
@@ -166,20 +175,22 @@ export function validateSupabaseEnv(): EnvValidationResult {
         'Não configurada no servidor. Necessária para criar/editar senhas de outros usuários no Supabase Auth e consultas administrativas sem restrição RLS.',
     });
     warnings.push(
-      'SUPABASE_SERVICE_ROLE_KEY não está configurada: criação/redefinição de senhas de outros usuários e consultas que dependem de bypass RLS podem ser limitadas.'
+      'SUPABASE_SERVICE_ROLE_KEY (ou SUPABASE_SECRET_KEY) não está configurada: criação/redefinição de senhas de outros usuários e consultas administrativas podem ser limitadas.'
     );
   } else if (isPlaceholderValue(serviceKey) || serviceKey.length < 20) {
     checks.push({
-      name: 'SUPABASE_SERVICE_ROLE_KEY',
+      name: serviceKeyVarName,
       required: false,
       configured: true,
       valid: false,
-      issue: 'Chave Service Role inválida ou com valor de exemplo.',
+      issue: 'Chave Service Role / Secret Key inválida ou com valor de exemplo.',
     });
-    warnings.push('SUPABASE_SERVICE_ROLE_KEY parece inválida. Verifique o valor no painel Supabase.');
+    warnings.push(
+      'SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY parece inválida. Verifique o valor no painel Supabase.'
+    );
   } else {
     checks.push({
-      name: 'SUPABASE_SERVICE_ROLE_KEY',
+      name: serviceKeyVarName,
       required: false,
       configured: true,
       valid: true,
@@ -199,3 +210,4 @@ export function validateSupabaseEnv(): EnvValidationResult {
     warnings,
   };
 }
+

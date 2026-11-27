@@ -15,3 +15,4 @@ export async function POST() {
   res.cookies.set('jmbank_user_id', '', { path: '/', maxAge: 0 });
   return res;
 }
+

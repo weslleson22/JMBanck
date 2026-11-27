@@ -3,7 +3,8 @@
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@/lib/zod-resolver';
-import { DEMO_USERS, setStoredDemoUser } from '@/lib/client';
+import { ROLE_LABELS, setStoredDemoUser } from '@/lib/client';
+import type { Role } from '@/lib/role';
 import type { DatabaseHealthReport } from '@/lib/db-health';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -152,11 +153,8 @@ export default function LoginForm() {
     }
   }
 
-  function handleQuickFill(email: string) {
-    const acc = DEMO_USERS[email];
-    if (!acc) return;
-    setValue('email', acc.email, { shouldValidate: true });
-    setValue('password', acc.password, { shouldValidate: true });
+  function handleFillEmail(email: string) {
+    setValue('email', email, { shouldValidate: true });
   }
 
   return (
@@ -404,40 +402,62 @@ export default function LoginForm() {
         </Button>
       </form>
 
-      {/* Quick-Fill Test Accounts — ONLY visible in local development AND only when DB is healthy */}
+      {/* Real Database Users List — ONLY visible in local development AND only with real rows from Supabase */}
       {health && health.ok && !health.isProduction && (
         <div className="pt-4 border-t border-slate-200 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
               <Sparkles className="h-3.5 w-3.5 text-blue-600" />
-              Preenchimento Rápido (Desenvolvimento)
+              Usuários no Banco (Desenvolvimento)
             </span>
-            <span className="text-[11px] font-medium text-slate-500">Autentica no banco</span>
+            <span className="text-[11px] font-medium text-slate-500">
+              {health.devUsers?.length ?? 0} encontrado(s)
+            </span>
           </div>
 
-          <div className="grid grid-cols-1 gap-2 max-h-56 overflow-y-auto pr-1">
-            {Object.values(DEMO_USERS).map((acc) => (
-              <div
-                key={acc.email}
-                className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/70 p-2.5 sm:px-3 sm:py-2 text-xs hover:border-blue-300 hover:bg-blue-50/40 transition-colors"
-              >
-                <div className="min-w-0">
-                  <p className="font-semibold text-slate-900 text-xs truncate">{acc.roleLabel}</p>
-                  <p className="text-slate-600 font-mono text-[11px] truncate mt-0.5">
-                    {acc.email}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={loading}
-                  onClick={() => handleQuickFill(acc.email)}
-                  className="rounded border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer transition-colors self-end sm:self-auto shrink-0"
-                >
-                  Preencher
-                </button>
-              </div>
-            ))}
-          </div>
+          {health.devUsers && health.devUsers.length > 0 ? (
+            <div className="grid grid-cols-1 gap-2 max-h-56 overflow-y-auto pr-1">
+              {health.devUsers.map((acc) => {
+                const roleLabel =
+                  ROLE_LABELS[acc.role as Role] ?? acc.role;
+                return (
+                  <div
+                    key={acc.email}
+                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/70 p-2.5 sm:px-3 sm:py-2 text-xs hover:border-blue-300 hover:bg-blue-50/40 transition-colors"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-semibold text-slate-900 text-xs truncate">
+                        {acc.name} · <span className="text-blue-700">{roleLabel}</span>
+                      </p>
+                      <p className="text-slate-600 font-mono text-[11px] truncate mt-0.5">
+                        {acc.email}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => handleFillEmail(acc.email)}
+                      className="rounded border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer transition-colors self-end sm:self-auto shrink-0"
+                    >
+                      Usar e-mail
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-[11px] text-amber-900 space-y-1.5 leading-relaxed">
+              <p className="font-semibold">
+                Nenhum usuário encontrado na leitura inicial de <code className="font-mono">public.users</code>.
+              </p>
+              <p>
+                Use uma conta já existente no <strong>Supabase Auth</strong> (Authentication → Users)
+                ou configure <code className="font-mono">SUPABASE_SERVICE_ROLE_KEY</code> no{' '}
+                <code className="font-mono">.env.local</code> e execute{' '}
+                <code className="font-mono">node scripts/create_test_accounts.mjs</code>.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>

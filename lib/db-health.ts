@@ -10,6 +10,12 @@ export interface TableHealthStatus {
   code?: string;
 }
 
+export interface DevDatabaseUser {
+  email: string;
+  name: string;
+  role: string;
+}
+
 export interface DatabaseHealthReport {
   ok: boolean;
   checkedAt: string;
@@ -22,6 +28,7 @@ export interface DatabaseHealthReport {
   warnings: string[];
   tables: TableHealthStatus[];
   missingTables: string[];
+  devUsers?: DevDatabaseUser[];
   errorCode: string | null;
   errorMessage: string | null;
   hint: string | null;
@@ -136,11 +143,10 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
     };
   }
 
-  // 2. Probe PostgreSQL tables via Supabase REST
-  const usingServiceRole = Boolean(
-    env.supabaseServiceRoleKey &&
-      env.checks.find((c) => c.name === 'SUPABASE_SERVICE_ROLE_KEY')?.valid
-  );
+  // 2. Probe PostgreSQL tables via Supabase REST using GET (NOT HEAD, because PostgREST
+  // can return HTTP 204 with empty body on HEAD for missing tables when using sb_publishable keys)
+  const serviceCheck = env.checks.find((c) => c.name.startsWith('SUPABASE_'));
+  const usingServiceRole = Boolean(env.supabaseServiceRoleKey && serviceCheck?.valid);
   const clientKey = usingServiceRole ? env.supabaseServiceRoleKey! : env.supabasePublicKey;
 
   const client = createSupabaseJsClient(env.supabaseUrl, clientKey, {
@@ -152,7 +158,8 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
       try {
         const { count, error } = await client
           .from(table)
-          .select('id', { count: 'exact', head: true });
+          .select('id', { count: 'exact' })
+          .limit(1);
         if (error) {
           return {
             table,
@@ -214,7 +221,7 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
       errorCode: 'INVALID_API_KEY',
       errorMessage: `Chave de acesso ao banco de dados rejeitada: ${invalidKeyError.error}`,
       hint: usingServiceRole
-        ? 'Verifique a variável SUPABASE_SERVICE_ROLE_KEY no painel do Supabase.'
+        ? 'Verifique a variável SUPABASE_SERVICE_ROLE_KEY (ou SUPABASE_SECRET_KEY) no painel do Supabase.'
         : 'Verifique a variável NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY.',
     };
   }
@@ -261,15 +268,18 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
       tables: tableResults,
       missingTables,
       errorCode: 'MISSING_TABLES',
-      errorMessage: `Conexão com o Supabase estabelecida, mas faltam tabelas no banco: ${missingTables.join(', ')}.`,
-      hint: 'Execute o script SQL de criação das tabelas no SQL Editor do Supabase antes de utilizar a aplicação.',
+      errorMessage: `Conexão com o Supabase estabelecida, mas faltam ${missingTables.length} tabela(s) no banco: ${missingTables.join(', ')}.`,
+      hint: 'Execute o arquivo supabase/schema.sql no SQL Editor do painel Supabase para criar as tabelas e depois cadastre seus usuários (ex.: via node scripts/create_test_accounts.mjs).',
     };
   }
 
   // Note: If anon key is used before login, RLS might return 42501 on protected tables;
-  // check if EVERY table failed with non-RLS error.
+  // check if ANY table failed with non-RLS error.
   const hardErrors = tableResults.filter(
-    (t) => !t.ok && t.code !== '42501' && !(t.error ?? '').toLowerCase().includes('permission denied')
+    (t) =>
+      !t.ok &&
+      t.code !== '42501' &&
+      !(t.error ?? '').toLowerCase().includes('permission denied')
   );
 
   if (hardErrors.length > 0) {
@@ -293,14 +303,42 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
   }
 
   const rlsBlockedTables = tableResults
-    .filter((t) => !t.ok && (t.code === '42501' || (t.error ?? '').toLowerCase().includes('permission denied')))
+    .filter(
+      (t) =>
+        !t.ok &&
+        (t.code === '42501' || (t.error ?? '').toLowerCase().includes('permission denied'))
+    )
     .map((t) => t.table);
 
   const warnings = [...env.warnings];
   if (rlsBlockedTables.length > 0 && !usingServiceRole) {
     warnings.push(
-      `Tabelas protegidas por RLS antes do login (${rlsBlockedTables.join(', ')}). Configure SUPABASE_SERVICE_ROLE_KEY no servidor para leitura administrativa completa.`
+      `Tabelas protegidas por RLS antes do login (${rlsBlockedTables.join(', ')}). Configure SUPABASE_SERVICE_ROLE_KEY (ou SUPABASE_SECRET_KEY) no servidor para leitura administrativa completa.`
     );
+  }
+
+  // In local development only, fetch real users currently in `public.users` (emails only, never passwords)
+  let devUsers: DevDatabaseUser[] | undefined;
+  if (!env.isProduction) {
+    const { data: realUsers } = await client
+      .from('users')
+      .select('email, name, role')
+      .order('email', { ascending: true })
+      .limit(20);
+    if (Array.isArray(realUsers)) {
+      devUsers = realUsers
+        .filter((u: any) => Boolean(u?.email))
+        .map((u: any) => ({
+          email: String(u.email),
+          name: String(u.name ?? u.email),
+          role: String(u.role ?? 'student'),
+        }));
+      if (devUsers.length === 0) {
+        warnings.push(
+          'A tabela public.users está vazia. Execute "node scripts/create_test_accounts.mjs" (com SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY) ou crie usuários no Supabase Auth.'
+        );
+      }
+    }
   }
 
   return {
@@ -315,6 +353,7 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
     warnings,
     tables: tableResults,
     missingTables: [],
+    devUsers,
     errorCode: null,
     errorMessage: null,
     hint: null,

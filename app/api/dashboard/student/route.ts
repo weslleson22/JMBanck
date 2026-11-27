@@ -105,3 +105,4 @@ export async function GET() {
     return dbErrorResponse(e, 'painel do aluno');
   }
 }
+
