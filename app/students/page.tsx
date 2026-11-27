@@ -1,13 +1,16 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { getStoredDemoUser } from '@/lib/client';
 import type { ClassRecord, StudentRecord, StudentStatus } from '@/lib/school-types';
+import { generateReadablePassword } from '@/lib/password-utils';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { DatabaseErrorBanner, type DbErrorState } from '@/components/ui/db-error-banner';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@/lib/zod-resolver';
@@ -21,9 +24,14 @@ import {
   Pencil,
   Trash2,
   Eye,
+  EyeOff,
   ShieldCheck,
+  ShieldOff,
   Phone,
   Users,
+  KeyRound,
+  RefreshCw,
+  Mail,
   X,
 } from 'lucide-react';
 import {
@@ -34,6 +42,7 @@ import {
 
 const studentSchema = z.object({
   name: z.string().trim().min(2, 'Informe o nome completo do aluno'),
+  email: z.string().trim().email('Informe um e-mail válido').or(z.literal('')).optional().default(''),
   enrollment_number: z.string().trim().min(1, 'Informe o número da matrícula'),
   class_id: z.string().trim().min(1, 'Selecione a turma'),
   guardian_name: z.string().trim().optional().default(''),
@@ -41,6 +50,8 @@ const studentSchema = z.object({
   birth_date: z.string().trim().optional().default(''),
   status: z.enum(['active', 'transferred', 'inactive']),
   lgpd_consent: z.boolean().optional().default(true),
+  password: z.string().optional().default(''),
+  access_status: z.enum(['active', 'blocked']),
 });
 
 type StudentFormData = z.infer<typeof studentSchema>;
@@ -62,6 +73,7 @@ export default function StudentsPage() {
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [photosMap, setPhotosMap] = useState<Record<string, StudentPhotoRecord>>({});
   const [loadingList, setLoadingList] = useState(true);
+  const [dbError, setDbError] = useState<DbErrorState | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [role, setRole] = useState<string>('teacher');
@@ -74,6 +86,7 @@ export default function StudentsPage() {
   // Modals
   const [formOpen, setFormOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<StudentRecord | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
   const [viewingItem, setViewingItem] = useState<StudentRecord | null>(null);
   const [transferTarget, setTransferTarget] = useState<StudentRecord | null>(null);
   const [transferClassId, setTransferClassId] = useState('');
@@ -86,11 +99,14 @@ export default function StudentsPage() {
     register,
     handleSubmit,
     reset,
+    setValue,
+    getValues,
     formState: { errors },
   } = useForm<StudentFormData>({
     resolver: zodResolver(studentSchema),
     defaultValues: {
       name: '',
+      email: '',
       enrollment_number: '',
       class_id: '',
       guardian_name: '',
@@ -98,22 +114,43 @@ export default function StudentsPage() {
       birth_date: '',
       status: 'active',
       lgpd_consent: true,
+      password: '',
+      access_status: 'active',
     },
   });
 
   async function loadAll() {
     setLoadingList(true);
+    setDbError(null);
     try {
       const [stuRes, clsRes, dbPhotos] = await Promise.all([
         fetch('/api/students', { cache: 'no-store' }),
         fetch('/api/classes', { cache: 'no-store' }),
-        fetchAllStudentPhotos(),
+        fetchAllStudentPhotos().catch(() => ({})),
       ]);
-      if (stuRes.ok) setStudents(await stuRes.json());
-      if (clsRes.ok) setClasses(await clsRes.json());
+      const [stuData, clsData] = await Promise.all([
+        stuRes.json().catch(() => ({})),
+        clsRes.json().catch(() => ({})),
+      ]);
+
+      const failed = !stuRes.ok ? stuData : !clsRes.ok ? clsData : null;
+      if (failed) {
+        setDbError({
+          message: failed?.message ?? 'Erro ao carregar alunos do banco de dados.',
+          code: failed?.code,
+          hint: failed?.hint,
+        });
+      }
+
+      setStudents(stuRes.ok && Array.isArray(stuData) ? stuData : []);
+      setClasses(clsRes.ok && Array.isArray(clsData) ? clsData : []);
       setPhotosMap(dbPhotos);
     } catch {
-      toast.error('Erro ao carregar alunos.');
+      setDbError({
+        message: 'Falha de rede ao consultar alunos no banco de dados.',
+        code: 'NETWORK_ERROR',
+      });
+      setStudents([]);
     } finally {
       setLoadingList(false);
     }
@@ -143,6 +180,7 @@ export default function StudentsPage() {
         !q ||
         s.name.toLowerCase().includes(q) ||
         s.enrollment_number.toLowerCase().includes(q) ||
+        (s.email ?? '').toLowerCase().includes(q) ||
         (s.guardian_name ?? '').toLowerCase().includes(q) ||
         clsName.toLowerCase().includes(q);
       const matchesClass = !classFilter || s.class_id === classFilter;
@@ -152,13 +190,36 @@ export default function StudentsPage() {
   }, [students, search, classFilter, statusFilter, classMap]);
 
   const activeCount = students.filter((s) => s.status === 'active').length;
-  const transferredCount = students.filter((s) => s.status === 'transferred').length;
+  const withLoginCount = students.filter((s) => s.access_status === 'active').length;
+
+  function handleGeneratePassword() {
+    const generated = generateReadablePassword();
+    setValue('password', generated, { shouldValidate: true });
+    setShowPassword(true);
+    toast.info(`Senha sugerida preenchida: ${generated}`);
+  }
+
+  function handleSuggestEmail() {
+    const enrollment = (getValues('enrollment_number') || '').trim();
+    const rawName = (getValues('name') || '').trim();
+    const slug = rawName
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '.')
+      .replace(/^\.+|\.+$/g, '');
+    const prefix = slug || (enrollment ? `aluno.${enrollment}` : `aluno.${Date.now()}`);
+    const suggested = `${prefix}@jmbank.edu.br`;
+    setValue('email', suggested, { shouldValidate: true });
+  }
 
   function openCreateModal() {
     setEditingItem(null);
+    setShowPassword(true);
     const nextEnrollment = `2026${String(students.length + 50).padStart(4, '0')}`;
     reset({
       name: '',
+      email: '',
       enrollment_number: nextEnrollment,
       class_id: classes[0]?.id ?? '',
       guardian_name: '',
@@ -166,14 +227,18 @@ export default function StudentsPage() {
       birth_date: '',
       status: 'active',
       lgpd_consent: true,
+      password: '',
+      access_status: 'active',
     });
     setFormOpen(true);
   }
 
   function openEditModal(item: StudentRecord) {
     setEditingItem(item);
+    setShowPassword(false);
     reset({
       name: item.name,
+      email: item.email ?? '',
       enrollment_number: item.enrollment_number,
       class_id: item.class_id,
       guardian_name: item.guardian_name ?? '',
@@ -181,6 +246,8 @@ export default function StudentsPage() {
       birth_date: item.birth_date ?? '',
       status: item.status ?? 'active',
       lgpd_consent: item.lgpd_consent ?? true,
+      password: '',
+      access_status: item.access_status === 'blocked' ? 'blocked' : 'active',
     });
     setFormOpen(true);
   }
@@ -193,13 +260,29 @@ export default function StudentsPage() {
 
   async function onSubmit(data: StudentFormData) {
     if (!canManageStudents) return;
+
+    const trimmedPassword = (data.password ?? '').trim();
+    if (trimmedPassword && trimmedPassword.length < 6) {
+      toast.error('A senha de acesso do aluno deve ter pelo menos 6 caracteres.');
+      return;
+    }
+    if (trimmedPassword && !data.email?.trim()) {
+      toast.error('Informe o e-mail de login para definir a senha do aluno.');
+      return;
+    }
+
     setSaving(true);
+    const payload = {
+      ...data,
+      password: trimmedPassword || undefined,
+    };
+
     try {
       if (editingItem) {
         const res = await fetch(`/api/students/${editingItem.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data),
+          body: JSON.stringify(payload),
         });
         const json = await res.json();
         if (!res.ok) {
@@ -207,12 +290,16 @@ export default function StudentsPage() {
           return;
         }
         setStudents((prev) => prev.map((s) => (s.id === editingItem.id ? json : s)));
-        toast.success('Cadastro do aluno atualizado com sucesso!');
+        toast.success(
+          trimmedPassword
+            ? 'Aluno e senha de acesso atualizados com sucesso!'
+            : 'Cadastro do aluno atualizado com sucesso!'
+        );
       } else {
         const res = await fetch('/api/students', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data),
+          body: JSON.stringify(payload),
         });
         const json = await res.json();
         if (!res.ok) {
@@ -220,7 +307,11 @@ export default function StudentsPage() {
           return;
         }
         setStudents((prev) => [json, ...prev]);
-        toast.success('Aluno matriculado e carteira digital inicializada!');
+        toast.success(
+          trimmedPassword
+            ? 'Aluno matriculado e login liberado na plataforma!'
+            : 'Aluno matriculado e carteira digital inicializada!'
+        );
       }
       setFormOpen(false);
       setEditingItem(null);
@@ -293,18 +384,29 @@ export default function StudentsPage() {
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-1 leading-relaxed">
             {canManageStudents
-              ? 'Gerencie matrículas, dados cadastrais, responsáveis, transferências de turma e desligamentos.'
+              ? 'Gerencie matrículas, turmas, responsáveis e credenciais (e-mail e senha) de acesso dos alunos.'
               : 'Consulta de estudantes matriculados nas turmas autorizadas.'}
           </p>
         </div>
 
         {canManageStudents && (
-          <Button onClick={openCreateModal} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-1.5" />
-            Matricular Aluno
-          </Button>
+          <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+            <Link
+              href="/users"
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              <KeyRound className="h-4 w-4 text-blue-600" />
+              Gerenciar Usuários
+            </Link>
+            <Button onClick={openCreateModal} className="w-full sm:w-auto">
+              <Plus className="h-4 w-4 mr-1.5" />
+              Matricular Aluno
+            </Button>
+          </div>
         )}
       </div>
+
+      <DatabaseErrorBanner error={dbError} onRetry={loadAll} loading={loadingList} />
 
       {/* KPI Strip */}
       <div className="grid grid-cols-3 gap-3 sm:gap-5">
@@ -331,10 +433,10 @@ export default function StudentsPage() {
         <Card>
           <CardContent className="p-3.5 sm:p-5">
             <p className="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500 truncate">
-              Transferidos
+              Com Login Ativo
             </p>
-            <p className="font-numeric text-xl sm:text-2xl font-extrabold text-amber-600 mt-1">
-              {transferredCount}
+            <p className="font-numeric text-xl sm:text-2xl font-extrabold text-blue-600 mt-1">
+              {withLoginCount}
             </p>
           </CardContent>
         </Card>
@@ -348,7 +450,7 @@ export default function StudentsPage() {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar por nome, matrícula, turma ou responsável..."
+              placeholder="Buscar por nome, matrícula, e-mail, turma ou responsável..."
               className="pl-9"
             />
           </div>
@@ -433,24 +535,51 @@ export default function StudentsPage() {
                           <User className="h-5 w-5" />
                         )}
                       </div>
-                      <div className="min-w-0 space-y-0.5">
-                        <div className="flex flex-wrap items-center gap-2">
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                           <h3 className="font-heading font-bold text-sm sm:text-[15px] text-slate-900 truncate">
                             {s.name}
                           </h3>
                           <Badge variant={statusBadgeVariant(s.status)}>
                             {statusLabel(s.status)}
                           </Badge>
+                          {s.access_status === 'active' ? (
+                            <Badge variant="default" className="gap-1">
+                              <ShieldCheck className="h-3 w-3" />
+                              Login Ativo
+                            </Badge>
+                          ) : s.access_status === 'blocked' ? (
+                            <Badge variant="destructive" className="gap-1">
+                              <ShieldOff className="h-3 w-3" />
+                              Login Bloqueado
+                            </Badge>
+                          ) : (
+                            <Badge variant="secondary" className="gap-1">
+                              <KeyRound className="h-3 w-3" />
+                              Sem Senha
+                            </Badge>
+                          )}
                         </div>
-                        <p className="text-xs text-slate-500 truncate">
-                          Matrícula:{' '}
-                          <span className="font-mono tabular-nums font-medium text-slate-700">
-                            {s.enrollment_number}
-                          </span>{' '}
-                          · Turma:{' '}
-                          <strong className="font-semibold text-slate-700">{resolvedClass}</strong>
-                          {s.guardian_name ? ` · Resp.: ${s.guardian_name}` : ''}
-                        </p>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
+                          <span>
+                            Matrícula:{' '}
+                            <span className="font-mono tabular-nums font-medium text-slate-700">
+                              {s.enrollment_number}
+                            </span>
+                          </span>
+                          <span>
+                            Turma:{' '}
+                            <strong className="font-semibold text-slate-700">
+                              {resolvedClass}
+                            </strong>
+                          </span>
+                          {s.email && (
+                            <span className="inline-flex items-center gap-1 font-mono text-[11px] text-slate-600">
+                              <Mail className="h-3 w-3 text-slate-400" />
+                              {s.email}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -472,7 +601,7 @@ export default function StudentsPage() {
                           </Button>
                           <Button variant="outline" size="sm" onClick={() => openEditModal(s)}>
                             <Pencil className="h-3.5 w-3.5 mr-1" />
-                            Editar
+                            Editar / Senha
                           </Button>
                           <Button
                             variant="outline"
@@ -505,10 +634,10 @@ export default function StudentsPage() {
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h2 className="font-heading text-lg font-bold text-slate-900">
-                  {editingItem ? 'Editar Cadastro do Aluno' : 'Matricular Novo Aluno'}
+                  {editingItem ? 'Editar Aluno & Senha de Acesso' : 'Matricular Novo Aluno'}
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Os dados ficam sincronizados com a Carteira Digital e o Carômetro Escolar.
+                  Configure os dados escolares e defina e-mail e senha para o aluno acessar o portal.
                 </p>
               </div>
               <button
@@ -601,6 +730,103 @@ export default function StudentsPage() {
                 </div>
               </div>
 
+              {/* Login & Password Control Section */}
+              <div className="rounded-xl border border-blue-200/80 bg-blue-50/40 p-3.5 sm:p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <KeyRound className="h-4 w-4 text-blue-600" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-blue-900">
+                      Acesso & Senha do Aluno
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleSuggestEmail}
+                      className="inline-flex items-center gap-1 rounded-md bg-white border border-blue-200 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-blue-50 cursor-pointer"
+                    >
+                      Sugerir e-mail
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGeneratePassword}
+                      className="inline-flex items-center gap-1 rounded-md bg-white border border-blue-200 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50 cursor-pointer"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                      Gerar senha
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">
+                    E-mail de Login do Aluno
+                  </label>
+                  <Input
+                    type="email"
+                    {...register('email')}
+                    placeholder="aluno@jmbank.edu.br"
+                    autoComplete="off"
+                    className="bg-white"
+                  />
+                  {errors.email && (
+                    <p className="text-xs font-medium text-red-600">{errors.email.message}</p>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700">
+                      {editingItem?.has_access ? 'Nova Senha (opcional)' : 'Senha de Acesso'}
+                    </label>
+                    <div className="relative">
+                      <Input
+                        type={showPassword ? 'text' : 'password'}
+                        {...register('password')}
+                        placeholder={
+                          editingItem?.has_access
+                            ? 'Vazio mantém a atual'
+                            : 'Mín. 6 caracteres'
+                        }
+                        autoComplete="new-password"
+                        className="bg-white pr-9 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        className="absolute right-2 top-2.5 p-1 rounded text-slate-400 hover:text-slate-700 cursor-pointer"
+                        aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                      >
+                        {showPassword ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700">
+                      Permissão de Login
+                    </label>
+                    <select
+                      {...register('access_status')}
+                      className="flex h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-base sm:text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    >
+                      <option value="active">Acesso Liberado</option>
+                      <option value="blocked">Acesso Bloqueado</option>
+                    </select>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Com e-mail e senha cadastrados, o aluno já consegue entrar em{' '}
+                  <code className="font-mono bg-white px-1 rounded">/login</code> para ver sua
+                  carteira e responder atividades.
+                </p>
+              </div>
+
               <label className="flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50/50 p-3 text-xs text-emerald-900 cursor-pointer">
                 <input
                   type="checkbox"
@@ -675,6 +901,20 @@ export default function StudentsPage() {
 
             <div className="rounded-xl bg-slate-50 p-4 space-y-2.5 text-xs sm:text-sm text-slate-700">
               <p className="flex items-center justify-between gap-2">
+                <span className="text-slate-500">E-mail de Login</span>
+                <span className="font-mono text-xs">{viewingItem.email || 'Não definido'}</span>
+              </p>
+              <p className="flex items-center justify-between gap-2">
+                <span className="text-slate-500">Acesso ao Portal</span>
+                {viewingItem.access_status === 'active' ? (
+                  <Badge variant="success">Login Ativo</Badge>
+                ) : viewingItem.access_status === 'blocked' ? (
+                  <Badge variant="destructive">Bloqueado</Badge>
+                ) : (
+                  <Badge variant="secondary">Sem Senha</Badge>
+                )}
+              </p>
+              <p className="flex items-center justify-between gap-2">
                 <span className="text-slate-500">Turma Atual</span>
                 <span className="font-semibold text-right">
                   {classMap.get(viewingItem.class_id) ??
@@ -728,7 +968,7 @@ export default function StudentsPage() {
                   }}
                 >
                   <Pencil className="h-3.5 w-3.5 mr-1.5" />
-                  Editar
+                  Editar / Senha
                 </Button>
               )}
               <Button size="sm" onClick={() => setViewingItem(null)}>
@@ -812,7 +1052,7 @@ export default function StudentsPage() {
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="Excluir Aluno"
-        description="Tem certeza que deseja excluir o cadastro deste aluno? Esta ação não poderá ser desfeita."
+        description="Tem certeza que deseja excluir o cadastro deste aluno e revogar seu acesso ao portal? Esta ação não poderá ser desfeita."
         itemName={
           deleteTarget
             ? `${deleteTarget.name} (Matrícula: ${deleteTarget.enrollment_number})`

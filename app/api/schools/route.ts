@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { supabaseServer } from '@/lib/supabase';
 import { authorize } from '@/lib/role';
-import { readSchoolStructureDb, writeSchoolStructureDb } from '@/lib/school-db';
-import type { SchoolRecord } from '@/lib/school-types';
+import {
+  dbErrorResponse,
+  getServerDbContext,
+  insertWithSchemaFallback,
+} from '@/lib/supabase-data';
 
 const createSchoolSchema = z.object({
   name: z.string().trim().min(2, 'Nome da escola é obrigatório'),
@@ -14,23 +16,39 @@ const createSchoolSchema = z.object({
   status: z.enum(['active', 'inactive']).optional().default('active'),
 });
 
+function normalizeSchool(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    code: row.code ?? undefined,
+    city: row.city ?? undefined,
+    academic_year: row.academic_year ? String(row.academic_year) : '2026',
+    director_name: row.director_name ?? undefined,
+    status: row.status === 'inactive' ? 'inactive' : 'active',
+    created_at: row.created_at ?? new Date().toISOString(),
+  };
+}
+
 export async function GET() {
   try {
-    const db = await readSchoolStructureDb();
-    return NextResponse.json(db.schools);
+    const { db } = await getServerDbContext();
+    const { data, error } = await db
+      .from('schools')
+      .select('*')
+      .order('name', { ascending: true });
+
+    if (error) return dbErrorResponse(error, 'escolas (schools)');
+    return NextResponse.json((data ?? []).map(normalizeSchool));
   } catch (e: any) {
-    return NextResponse.json(
-      { message: e?.message ?? 'Erro ao carregar escolas' },
-      { status: 500 }
-    );
+    return dbErrorResponse(e, 'escolas (schools)');
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const supabase = await supabaseServer();
+    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(supabase, ['manage_schools', 'manage_school']);
+      await authorize(authClient, ['manage_schools', 'manage_school']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para cadastrar escolas' },
@@ -47,37 +65,22 @@ export async function POST(req: Request) {
       );
     }
 
-    const newSchool: SchoolRecord = {
-      id: `esc-${Date.now()}`,
+    const fullPayload: Record<string, any> = {
       name: parsed.data.name,
-      code: parsed.data.code || undefined,
-      city: parsed.data.city || undefined,
-      academic_year: parsed.data.academic_year || '2026',
-      director_name: parsed.data.director_name || undefined,
+      ...(parsed.data.code ? { code: parsed.data.code } : {}),
+      ...(parsed.data.city ? { city: parsed.data.city } : {}),
+      academic_year: parsed.data.academic_year,
+      ...(parsed.data.director_name ? { director_name: parsed.data.director_name } : {}),
       status: parsed.data.status,
-      created_at: new Date().toISOString(),
     };
 
-    try {
-      const { data } = await supabase
-        .from('schools')
-        .insert({ name: newSchool.name })
-        .select()
-        .single();
-      if (data?.id) newSchool.id = data.id;
-    } catch {
-      // Fallback persisted in server JSON DB
-    }
+    const { data, error } = await insertWithSchemaFallback(db, 'schools', fullPayload, {
+      name: parsed.data.name,
+    });
 
-    const db = await readSchoolStructureDb();
-    db.schools = [newSchool, ...db.schools];
-    await writeSchoolStructureDb(db);
-
-    return NextResponse.json(newSchool, { status: 201 });
+    if (error) return dbErrorResponse(error, 'criação de escola');
+    return NextResponse.json(normalizeSchool(data), { status: 201 });
   } catch (e: any) {
-    return NextResponse.json(
-      { message: e?.message ?? 'Erro ao criar escola' },
-      { status: 500 }
-    );
+    return dbErrorResponse(e, 'criação de escola');
   }
 }

@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { supabaseServer } from '@/lib/supabase';
 import { authorize } from '@/lib/role';
-import { readSchoolStructureDb, writeSchoolStructureDb } from '@/lib/school-db';
-import type { GradeLevelRecord } from '@/lib/school-types';
+import {
+  dbErrorResponse,
+  getServerDbContext,
+  insertWithSchemaFallback,
+} from '@/lib/supabase-data';
 
 const createGradeLevelSchema = z.object({
   name: z.string().trim().min(2, 'Nome da série é obrigatório'),
@@ -11,26 +13,42 @@ const createGradeLevelSchema = z.object({
   order_index: z.coerce.number().int().min(1, 'Ordem deve ser maior ou igual a 1'),
   description: z.string().trim().optional().default(''),
   status: z.enum(['active', 'inactive']).optional().default('active'),
+  school_id: z.string().trim().optional(),
 });
+
+function normalizeGradeLevel(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    stage: row.stage ?? 'Ensino Básico',
+    order_index: Number(row.order_index ?? 1),
+    description: row.description ?? undefined,
+    status: row.status === 'inactive' ? 'inactive' : 'active',
+    school_id: row.school_id ?? undefined,
+    created_at: row.created_at ?? new Date().toISOString(),
+  };
+}
 
 export async function GET() {
   try {
-    const db = await readSchoolStructureDb();
-    const sorted = [...db.gradeLevels].sort((a, b) => a.order_index - b.order_index);
-    return NextResponse.json(sorted);
+    const { db } = await getServerDbContext();
+    const { data, error } = await db
+      .from('grade_levels')
+      .select('*')
+      .order('order_index', { ascending: true });
+
+    if (error) return dbErrorResponse(error, 'séries (grade_levels)');
+    return NextResponse.json((data ?? []).map(normalizeGradeLevel));
   } catch (e: any) {
-    return NextResponse.json(
-      { message: e?.message ?? 'Erro ao carregar séries' },
-      { status: 500 }
-    );
+    return dbErrorResponse(e, 'séries (grade_levels)');
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const supabase = await supabaseServer();
+    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(supabase, ['manage_grade_levels']);
+      await authorize(authClient, ['manage_grade_levels']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para cadastrar séries' },
@@ -47,36 +65,35 @@ export async function POST(req: Request) {
       );
     }
 
-    const newLevel: GradeLevelRecord = {
-      id: `gl-${Date.now()}`,
-      name: parsed.data.name,
-      stage: parsed.data.stage,
-      order_index: parsed.data.order_index,
-      description: parsed.data.description || undefined,
-      status: parsed.data.status,
-      created_at: new Date().toISOString(),
-    };
-
-    try {
-      const { data } = await supabase
-        .from('grade_levels')
-        .insert({ name: newLevel.name, order_index: newLevel.order_index })
-        .select()
-        .single();
-      if (data?.id) newLevel.id = data.id;
-    } catch {
-      // Persisted in JSON DB
+    let schoolId = parsed.data.school_id;
+    if (!schoolId) {
+      const { data: firstSchool } = await db.from('schools').select('id').limit(1).maybeSingle();
+      schoolId = firstSchool?.id;
     }
 
-    const db = await readSchoolStructureDb();
-    db.gradeLevels = [...db.gradeLevels, newLevel].sort((a, b) => a.order_index - b.order_index);
-    await writeSchoolStructureDb(db);
+    const corePayload: Record<string, any> = {
+      name: parsed.data.name,
+      order_index: parsed.data.order_index,
+      ...(schoolId ? { school_id: schoolId } : {}),
+    };
 
-    return NextResponse.json(newLevel, { status: 201 });
-  } catch (e: any) {
-    return NextResponse.json(
-      { message: e?.message ?? 'Erro ao criar série' },
-      { status: 500 }
+    const fullPayload: Record<string, any> = {
+      ...corePayload,
+      stage: parsed.data.stage,
+      ...(parsed.data.description ? { description: parsed.data.description } : {}),
+      status: parsed.data.status,
+    };
+
+    const { data, error } = await insertWithSchemaFallback(
+      db,
+      'grade_levels',
+      fullPayload,
+      corePayload
     );
+
+    if (error) return dbErrorResponse(error, 'criação de série');
+    return NextResponse.json(normalizeGradeLevel(data), { status: 201 });
+  } catch (e: any) {
+    return dbErrorResponse(e, 'criação de série');
   }
 }

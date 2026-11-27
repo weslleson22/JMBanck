@@ -23,6 +23,7 @@ import {
   Landmark,
   Menu,
   X,
+  KeyRound,
 } from 'lucide-react';
 import {
   supabaseClient,
@@ -133,6 +134,12 @@ const navSections: NavSection[] = [
         icon: Users,
         roles: ['super_admin', 'school_admin', 'coordinator', 'teacher'],
       },
+      {
+        href: '/users',
+        label: 'Usuários & Acessos',
+        icon: KeyRound,
+        roles: ['super_admin', 'school_admin'],
+      },
     ],
   },
   {
@@ -223,6 +230,11 @@ export default function Sidebar() {
 
   const handleLogout = async () => {
     setStoredDemoUser(null);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // ignore
+    }
     try {
       await supabaseClient().auth.signOut();
     } catch {

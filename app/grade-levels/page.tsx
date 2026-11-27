@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { DatabaseErrorBanner, type DbErrorState } from '@/components/ui/db-error-banner';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@/lib/zod-resolver';
@@ -43,6 +44,7 @@ type GradeLevelFormData = z.infer<typeof gradeLevelSchema>;
 export default function GradeLevelsPage() {
   const [levels, setLevels] = useState<GradeLevelRecord[]>([]);
   const [loadingList, setLoadingList] = useState(true);
+  const [dbError, setDbError] = useState<DbErrorState | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [role, setRole] = useState<string>('super_admin');
@@ -75,14 +77,26 @@ export default function GradeLevelsPage() {
 
   async function loadLevels() {
     setLoadingList(true);
+    setDbError(null);
     try {
       const res = await fetch('/api/grade-levels', { cache: 'no-store' });
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) setLevels(data);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDbError({
+          message: data?.message ?? 'Erro ao carregar séries do banco de dados.',
+          code: data?.code,
+          hint: data?.hint,
+        });
+        setLevels([]);
+        return;
       }
+      if (Array.isArray(data)) setLevels(data);
     } catch {
-      toast.error('Não foi possível carregar as séries.');
+      setDbError({
+        message: 'Falha de rede ao consultar séries no banco de dados.',
+        code: 'NETWORK_ERROR',
+      });
+      setLevels([]);
     } finally {
       setLoadingList(false);
     }
@@ -226,6 +240,8 @@ export default function GradeLevelsPage() {
           </Button>
         )}
       </div>
+
+      <DatabaseErrorBanner error={dbError} onRetry={loadLevels} loading={loadingList} />
 
       {/* KPI Strip */}
       <div className="grid grid-cols-3 gap-3 sm:gap-5">

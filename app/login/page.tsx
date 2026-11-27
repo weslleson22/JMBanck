@@ -54,7 +54,9 @@ export default function LoginPage() {
               <ArrowLeft className="h-3.5 w-3.5" />
               Voltar ao início
             </Link>
-            <span className="text-[11px] sm:text-xs text-slate-400">Ambiente de Demonstração</span>
+            <span className="text-[11px] sm:text-xs text-slate-500 font-medium">
+              Autenticação Segura · Supabase
+            </span>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-8 shadow-sm space-y-5 sm:space-y-6">
@@ -63,7 +65,7 @@ export default function LoginPage() {
                 Acesse sua conta
               </h2>
               <p className="text-xs sm:text-sm leading-relaxed text-slate-500">
-                Entre com suas credenciais ou escolha um perfil de teste abaixo.
+                Entre com seu e-mail institucional e senha cadastrados no banco de dados.
               </p>
             </div>
 

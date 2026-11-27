@@ -1,5 +1,5 @@
-import { supabaseServer } from '@/lib/supabase';
 import { authorize } from '@/lib/role';
+import { dbErrorResponse, getServerDbContext } from '@/lib/supabase-data';
 import { NextResponse } from 'next/server';
 
 export async function GET(
@@ -7,28 +7,37 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await supabaseServer();
-    await authorize(supabase, ['view_carometro']);
+    const { authClient, db } = await getServerDbContext();
+    await authorize(authClient, ['view_carometro']);
     const { id: studentId } = await params;
 
-    const { data: student, error } = await supabase
+    const { data: student, error } = await db
       .from('students')
       .select('photo_path')
       .eq('id', studentId)
       .single();
-    if (error) return NextResponse.json({ url: null }, { status: 200 });
+    if (error) return dbErrorResponse(error, 'students.photo_path');
 
     const path = student?.photo_path;
     if (!path) return NextResponse.json({ url: null }, { status: 200 });
 
-    const { data: signed, error: signErr } = await supabase.storage
+    // If stored directly as data URL or external URL, return immediately
+    if (path.startsWith('data:image/') || path.startsWith('http://') || path.startsWith('https://')) {
+      return NextResponse.json({ url: path });
+    }
+
+    const { data: signed, error: signErr } = await db.storage
       .from('student-photos')
       .createSignedUrl(path, 60 * 5);
-    if (signErr) return NextResponse.json({ url: null }, { status: 200 });
+    if (signErr) return dbErrorResponse(signErr, 'storage.student-photos');
 
     return NextResponse.json({ url: signed?.signedUrl ?? null });
-  } catch {
-    return NextResponse.json({ url: null }, { status: 200 });
+  } catch (e: any) {
+    const msg = String(e?.message ?? '');
+    if (msg === 'Unauthorized' || msg === 'Forbidden') {
+      return NextResponse.json({ message: 'Acesso não autorizado.' }, { status: 403 });
+    }
+    return dbErrorResponse(e, 'students.photo_path');
   }
 }
 
@@ -37,31 +46,35 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await supabaseServer();
-    await authorize(supabase, ['manage_student_photos']);
+    const { authClient, db } = await getServerDbContext();
+    await authorize(authClient, ['manage_student_photos']);
     const { id: studentId } = await params;
 
     const form = await request.formData();
     const file = form.get('file') as File | null;
-    if (!file) return NextResponse.json({ message: 'No file provided' }, { status: 400 });
+    if (!file) return NextResponse.json({ message: 'Nenhum arquivo enviado.' }, { status: 400 });
 
     const fileExt = file.name.split('.').pop();
     const path = `${studentId}.${fileExt}`;
 
-    const { error: uploadErr } = await supabase.storage
+    const { error: uploadErr } = await db.storage
       .from('student-photos')
       .upload(path, file, { upsert: true, cacheControl: '3600', contentType: file.type });
-    if (uploadErr) return NextResponse.json({ message: uploadErr.message }, { status: 500 });
+    if (uploadErr) return dbErrorResponse(uploadErr, 'storage.student-photos');
 
-    const { error: updErr } = await supabase
+    const { error: updErr } = await db
       .from('students')
       .update({ photo_path: path })
       .eq('id', studentId);
-    if (updErr) return NextResponse.json({ message: updErr.message }, { status: 500 });
+    if (updErr) return dbErrorResponse(updErr, 'students.photo_path');
 
-    return NextResponse.json({ message: 'Photo uploaded', path });
+    return NextResponse.json({ message: 'Foto enviada com sucesso.', path });
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Error' }, { status: 403 });
+    const msg = String(e?.message ?? '');
+    if (msg === 'Unauthorized' || msg === 'Forbidden') {
+      return NextResponse.json({ message: 'Acesso não autorizado.' }, { status: 403 });
+    }
+    return dbErrorResponse(e, 'students.photo_path');
   }
 }
 
@@ -70,25 +83,35 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await supabaseServer();
-    await authorize(supabase, ['manage_student_photos']);
+    const { authClient, db } = await getServerDbContext();
+    await authorize(authClient, ['manage_student_photos']);
     const { id: studentId } = await params;
 
-    const { data: student, error } = await supabase
+    const { data: student, error } = await db
       .from('students')
       .select('photo_path')
       .eq('id', studentId)
       .single();
-    if (error) return NextResponse.json({ message: error.message }, { status: 404 });
+    if (error) return dbErrorResponse(error, 'students.photo_path');
 
     const path = student?.photo_path;
-    if (!path) return NextResponse.json({ message: 'No photo to delete' }, { status: 400 });
+    if (!path) return NextResponse.json({ message: 'Nenhuma foto para excluir.' }, { status: 400 });
 
-    await supabase.storage.from('student-photos').remove([path]);
-    await supabase.from('students').update({ photo_path: null }).eq('id', studentId);
+    if (!path.startsWith('data:image/') && !path.startsWith('http')) {
+      await db.storage.from('student-photos').remove([path]);
+    }
+    const { error: updErr } = await db
+      .from('students')
+      .update({ photo_path: null })
+      .eq('id', studentId);
+    if (updErr) return dbErrorResponse(updErr, 'students.photo_path');
 
-    return NextResponse.json({ message: 'Photo deleted' });
+    return NextResponse.json({ message: 'Foto removida com sucesso.' });
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Error' }, { status: 403 });
+    const msg = String(e?.message ?? '');
+    if (msg === 'Unauthorized' || msg === 'Forbidden') {
+      return NextResponse.json({ message: 'Acesso não autorizado.' }, { status: 403 });
+    }
+    return dbErrorResponse(e, 'students.photo_path');
   }
 }

@@ -15,6 +15,7 @@ import {
   Landmark,
   LogIn,
   GraduationCap,
+  KeyRound,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -99,6 +100,12 @@ const featureModules = [
     description: 'Consulta de matrículas, vínculo com turmas e histórico escolar.',
     href: '/students',
     icon: GraduationCap,
+  },
+  {
+    title: 'Usuários & Controle de Acessos',
+    description: 'Criação de logins, redefinição de senhas, perfis RBAC e bloqueio de contas.',
+    href: '/users',
+    icon: KeyRound,
   },
 ];
 

@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { supabaseServer } from '@/lib/supabase';
 import { authorize } from '@/lib/role';
-import { readSchoolStructureDb, writeSchoolStructureDb } from '@/lib/school-db';
+import {
+  dbErrorResponse,
+  getServerDbContext,
+  updateWithSchemaFallback,
+} from '@/lib/supabase-data';
 
 const updateGradeLevelSchema = z.object({
   name: z.string().trim().min(2, 'Nome da série é obrigatório').optional(),
@@ -12,20 +15,32 @@ const updateGradeLevelSchema = z.object({
   status: z.enum(['active', 'inactive']).optional(),
 });
 
+function normalizeGradeLevel(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    stage: row.stage ?? 'Ensino Básico',
+    order_index: Number(row.order_index ?? 1),
+    description: row.description ?? undefined,
+    status: row.status === 'inactive' ? 'inactive' : 'active',
+    school_id: row.school_id ?? undefined,
+    created_at: row.created_at ?? new Date().toISOString(),
+  };
+}
+
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    const db = await readSchoolStructureDb();
-    const item = db.gradeLevels.find((g) => g.id === id);
-    if (!item) {
-      return NextResponse.json({ message: 'Série não encontrada' }, { status: 404 });
-    }
-    return NextResponse.json(item);
+    const { db } = await getServerDbContext();
+    const { data, error } = await db.from('grade_levels').select('*').eq('id', id).maybeSingle();
+    if (error) return dbErrorResponse(error, 'série');
+    if (!data) return NextResponse.json({ message: 'Série não encontrada' }, { status: 404 });
+    return NextResponse.json(normalizeGradeLevel(data));
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro interno' }, { status: 500 });
+    return dbErrorResponse(e, 'série');
   }
 }
 
@@ -35,9 +50,9 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-    const supabase = await supabaseServer();
+    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(supabase, ['manage_grade_levels']);
+      await authorize(authClient, ['manage_grade_levels']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para editar séries' },
@@ -54,32 +69,32 @@ export async function PUT(
       );
     }
 
-    const db = await readSchoolStructureDb();
-    const idx = db.gradeLevels.findIndex((g) => g.id === id);
-    if (idx === -1) {
-      return NextResponse.json({ message: 'Série não encontrada' }, { status: 404 });
-    }
+    const corePayload: Record<string, any> = {};
+    if (parsed.data.name !== undefined) corePayload.name = parsed.data.name;
+    if (parsed.data.order_index !== undefined) corePayload.order_index = parsed.data.order_index;
 
-    const updated = {
-      ...db.gradeLevels[idx],
-      ...parsed.data,
+    const fullPayload: Record<string, any> = {
+      ...corePayload,
+      ...(parsed.data.stage !== undefined ? { stage: parsed.data.stage } : {}),
+      ...(parsed.data.description !== undefined
+        ? { description: parsed.data.description || null }
+        : {}),
+      ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
     };
-    db.gradeLevels[idx] = updated;
-    db.gradeLevels.sort((a, b) => a.order_index - b.order_index);
-    await writeSchoolStructureDb(db);
 
-    try {
-      await supabase
-        .from('grade_levels')
-        .update({ name: updated.name, order_index: updated.order_index })
-        .eq('id', id);
-    } catch {
-      // Local DB already saved
-    }
+    const { data, error } = await updateWithSchemaFallback(
+      db,
+      'grade_levels',
+      id,
+      fullPayload,
+      corePayload
+    );
 
-    return NextResponse.json(updated);
+    if (error) return dbErrorResponse(error, 'atualização de série');
+    if (!data) return NextResponse.json({ message: 'Série não encontrada' }, { status: 404 });
+    return NextResponse.json(normalizeGradeLevel(data));
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro ao atualizar série' }, { status: 500 });
+    return dbErrorResponse(e, 'atualização de série');
   }
 }
 
@@ -91,9 +106,9 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const supabase = await supabaseServer();
+    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(supabase, ['manage_grade_levels']);
+      await authorize(authClient, ['manage_grade_levels']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para excluir séries' },
@@ -101,24 +116,10 @@ export async function DELETE(
       );
     }
 
-    const db = await readSchoolStructureDb();
-    const exists = db.gradeLevels.some((g) => g.id === id);
-    if (!exists) {
-      return NextResponse.json({ message: 'Série não encontrada' }, { status: 404 });
-    }
-
-    db.gradeLevels = db.gradeLevels.filter((g) => g.id !== id);
-    await writeSchoolStructureDb(db);
-
-    try {
-      await supabase.from('grade_levels').delete().eq('id', id);
-    } catch {
-      // Local DB already saved
-    }
-
+    const { error } = await db.from('grade_levels').delete().eq('id', id);
+    if (error) return dbErrorResponse(error, 'exclusão de série');
     return NextResponse.json({ ok: true, id });
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro ao excluir série' }, { status: 500 });
+    return dbErrorResponse(e, 'exclusão de série');
   }
 }
-

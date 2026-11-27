@@ -1,0 +1,93 @@
+[
+  {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "email": "admin@demo.com",
+    "name": "Carlos Mendes (Super Admin)",
+    "role": "super_admin",
+    "status": "active",
+    "password_hash": "86b5878d6d7ce94ee612cf8b6cde8d27:1f6fe2268019f10c72950c2249f1c04536744e199b2b6e1099af623b2e0482655ccb0cd911d0b2bf25b7e6bb74769b0c23ddddc92bb7306860a077945d219e02",
+    "linked_entity_type": null,
+    "linked_entity_id": null,
+    "last_login_at": null,
+    "created_at": "2026-11-27T01:59:28.895Z",
+    "updated_at": "2026-11-27T01:59:28.895Z"
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000002",
+    "email": "director@demo.com",
+    "name": "Helena Costa (Diretora)",
+    "role": "school_admin",
+    "status": "active",
+    "password_hash": "ec47343fde174149a0cdfab4dae99718:edaaf1f5339aff861547b4d1905a6cac64e0d5dcce6f7fb18c383bc4548c2e0c88fa232f6e621825dd0729b7a7905864cfe706409f6e6a19cc83ba94fb1a9c2d",
+    "linked_entity_type": null,
+    "linked_entity_id": null,
+    "last_login_at": null,
+    "created_at": "2026-11-27T01:59:28.895Z",
+    "updated_at": "2026-11-27T01:59:28.895Z"
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000003",
+    "email": "coordinator@demo.com",
+    "name": "Marcos Souza (Coordenador)",
+    "role": "coordinator",
+    "status": "active",
+    "password_hash": "f4e05b0a46b3ab3e6168ed7394265283:b4ad6deb9f487f126babc30250b41972a58bcf7788034c0f6f09134d9af152cdc87893d62f2796787475589e3046595c1bc7bac9f1469f0a3f63bdc4291f885a",
+    "linked_entity_type": null,
+    "linked_entity_id": null,
+    "last_login_at": null,
+    "created_at": "2026-11-27T01:59:28.895Z",
+    "updated_at": "2026-11-27T01:59:28.895Z"
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000004",
+    "email": "teacher@demo.com",
+    "name": "Profª. Ana Paula",
+    "role": "teacher",
+    "status": "active",
+    "password_hash": "47e471eb786cb644ace193f23a1ab5fe:2dc8e6fe6b3aabd31edd4c463c155da6f7b5babb370f76d905449fccb38f976787f3925ba23aa076813c63841408ea15b7c1131d140399f97c1ed87dc7ab426e",
+    "linked_entity_type": "teacher",
+    "linked_entity_id": "prof-1",
+    "last_login_at": null,
+    "created_at": "2026-11-27T01:59:28.895Z",
+    "updated_at": "2026-11-27T01:59:28.895Z"
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000005",
+    "email": "student@demo.com",
+    "name": "Lucas Oliveira",
+    "role": "student",
+    "status": "active",
+    "password_hash": "f65ef108daa3261d54a37a60b3575734:d51124ad8e783b598a7d7354c5702405ded912bcdb2296812ef909f1275d57a37cc5c6c6afe333fd1ba07e937e53890fdc8e3a9f245559b89a0a280d4c5bf14c",
+    "linked_entity_type": "student",
+    "linked_entity_id": "stu-1",
+    "last_login_at": null,
+    "created_at": "2026-11-27T01:59:28.895Z",
+    "updated_at": "2026-11-27T01:59:28.895Z"
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000006",
+    "email": "guardian@demo.com",
+    "name": "Roberto Oliveira (Responsável)",
+    "role": "guardian",
+    "status": "active",
+    "password_hash": "2fc9f1d3a6a022297b5d76989c5daa37:406344c49531ca5e37d097198b328ae05c8077ff817621bd80bfe19da85e57ecd6e2c08710b43883cb945a1c5699ed01fd395dc312c9e7e70ebd6b3e16164a55",
+    "linked_entity_type": null,
+    "linked_entity_id": null,
+    "last_login_at": null,
+    "created_at": "2026-11-27T01:59:28.895Z",
+    "updated_at": "2026-11-27T01:59:28.895Z"
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000007",
+    "email": "treasury@demo.com",
+    "name": "Fernanda Lima (Tesouraria)",
+    "role": "treasury",
+    "status": "active",
+    "password_hash": "ee989eb1b049d539b33efa6d37b0073c:caf6351df75bebbe145e7aa98c9cb9fd729eeb8fa91f719b4b847a9b04eb40eb8aab98bd374751c55d0a81ad993904a252289795e1d82337be9c4f07e74e0153",
+    "linked_entity_type": null,
+    "linked_entity_id": null,
+    "last_login_at": null,
+    "created_at": "2026-11-27T01:59:28.895Z",
+    "updated_at": "2026-11-27T01:59:28.895Z"
+  }
+]

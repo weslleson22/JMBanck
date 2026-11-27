@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { supabaseServer } from '@/lib/supabase';
 import { authorize } from '@/lib/role';
-import { readSchoolStructureDb, writeSchoolStructureDb } from '@/lib/school-db';
-import type { ClassRecord } from '@/lib/school-types';
+import {
+  dbErrorResponse,
+  getServerDbContext,
+  insertWithSchemaFallback,
+} from '@/lib/supabase-data';
 
 const createClassSchema = z.object({
   name: z.string().trim().min(2, 'Nome da turma é obrigatório'),
@@ -16,23 +18,41 @@ const createClassSchema = z.object({
   status: z.enum(['active', 'inactive']).optional().default('active'),
 });
 
+function normalizeClass(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    grade_level_id: row.grade_level_id ?? '',
+    school_id: row.school_id ?? '',
+    shift: row.shift ?? 'Matutino',
+    academic_year: row.academic_year ? String(row.academic_year) : '2026',
+    room: row.room ?? undefined,
+    capacity: row.capacity != null ? Number(row.capacity) : undefined,
+    status: row.status === 'inactive' ? 'inactive' : 'active',
+    created_at: row.created_at ?? new Date().toISOString(),
+  };
+}
+
 export async function GET() {
   try {
-    const db = await readSchoolStructureDb();
-    return NextResponse.json(db.classes);
+    const { db } = await getServerDbContext();
+    const { data, error } = await db
+      .from('classes')
+      .select('*')
+      .order('name', { ascending: true });
+
+    if (error) return dbErrorResponse(error, 'turmas (classes)');
+    return NextResponse.json((data ?? []).map(normalizeClass));
   } catch (e: any) {
-    return NextResponse.json(
-      { message: e?.message ?? 'Erro ao carregar turmas' },
-      { status: 500 }
-    );
+    return dbErrorResponse(e, 'turmas (classes)');
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const supabase = await supabaseServer();
+    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(supabase, ['manage_classes']);
+      await authorize(authClient, ['manage_classes']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para cadastrar turmas' },
@@ -49,40 +69,31 @@ export async function POST(req: Request) {
       );
     }
 
-    const newClass: ClassRecord = {
-      id: `turma-${Date.now()}`,
+    const corePayload = {
       name: parsed.data.name,
       grade_level_id: parsed.data.grade_level_id,
       school_id: parsed.data.school_id,
-      shift: parsed.data.shift,
-      academic_year: parsed.data.academic_year,
-      room: parsed.data.room || undefined,
-      capacity: parsed.data.capacity,
-      status: parsed.data.status,
-      created_at: new Date().toISOString(),
     };
 
-    try {
-      const { data } = await supabase
-        .from('classes')
-        .insert({
-          name: newClass.name,
-          grade_level_id: newClass.grade_level_id,
-          school_id: newClass.school_id,
-        })
-        .select()
-        .single();
-      if (data?.id) newClass.id = data.id;
-    } catch {
-      // Persisted in JSON DB
-    }
+    const fullPayload = {
+      ...corePayload,
+      shift: parsed.data.shift,
+      academic_year: parsed.data.academic_year,
+      ...(parsed.data.room ? { room: parsed.data.room } : {}),
+      capacity: parsed.data.capacity,
+      status: parsed.data.status,
+    };
 
-    const db = await readSchoolStructureDb();
-    db.classes = [newClass, ...db.classes];
-    await writeSchoolStructureDb(db);
+    const { data, error } = await insertWithSchemaFallback(
+      db,
+      'classes',
+      fullPayload,
+      corePayload
+    );
 
-    return NextResponse.json(newClass, { status: 201 });
+    if (error) return dbErrorResponse(error, 'criação de turma');
+    return NextResponse.json(normalizeClass(data), { status: 201 });
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro ao criar turma' }, { status: 500 });
+    return dbErrorResponse(e, 'criação de turma');
   }
 }

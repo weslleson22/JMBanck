@@ -1,13 +1,16 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { getStoredDemoUser } from '@/lib/client';
 import type { ClassRecord, SchoolRecord, TeacherRecord } from '@/lib/school-types';
+import { generateReadablePassword } from '@/lib/password-utils';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { DatabaseErrorBanner, type DbErrorState } from '@/components/ui/db-error-banner';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@/lib/zod-resolver';
@@ -20,10 +23,15 @@ import {
   Pencil,
   Trash2,
   Eye,
+  EyeOff,
   Mail,
   Phone,
   BookOpen,
   School,
+  KeyRound,
+  RefreshCw,
+  ShieldCheck,
+  ShieldOff,
   X,
 } from 'lucide-react';
 
@@ -34,6 +42,8 @@ const teacherSchema = z.object({
   school_id: z.string().trim().optional().default(''),
   phone: z.string().trim().optional().default(''),
   status: z.enum(['active', 'inactive']),
+  password: z.string().optional().default(''),
+  access_status: z.enum(['active', 'blocked']),
 });
 
 type TeacherFormData = z.infer<typeof teacherSchema>;
@@ -43,6 +53,7 @@ export default function TeachersPage() {
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [schools, setSchools] = useState<SchoolRecord[]>([]);
   const [loadingList, setLoadingList] = useState(true);
+  const [dbError, setDbError] = useState<DbErrorState | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [role, setRole] = useState<string>('super_admin');
@@ -56,6 +67,7 @@ export default function TeachersPage() {
 
   const [formOpen, setFormOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<TeacherRecord | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
   const [viewingItem, setViewingItem] = useState<TeacherRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TeacherRecord | null>(null);
 
@@ -65,6 +77,7 @@ export default function TeachersPage() {
     register,
     handleSubmit,
     reset,
+    setValue,
     formState: { errors },
   } = useForm<TeacherFormData>({
     resolver: zodResolver(teacherSchema),
@@ -75,22 +88,44 @@ export default function TeachersPage() {
       school_id: '',
       phone: '',
       status: 'active',
+      password: '',
+      access_status: 'active',
     },
   });
 
   async function loadAll() {
     setLoadingList(true);
+    setDbError(null);
     try {
       const [tRes, cRes, sRes] = await Promise.all([
         fetch('/api/teachers', { cache: 'no-store' }),
         fetch('/api/classes', { cache: 'no-store' }),
         fetch('/api/schools', { cache: 'no-store' }),
       ]);
-      if (tRes.ok) setTeachers(await tRes.json());
-      if (cRes.ok) setClasses(await cRes.json());
-      if (sRes.ok) setSchools(await sRes.json());
+      const [tData, cData, sData] = await Promise.all([
+        tRes.json().catch(() => ({})),
+        cRes.json().catch(() => ({})),
+        sRes.json().catch(() => ({})),
+      ]);
+
+      const failed = !tRes.ok ? tData : !cRes.ok ? cData : !sRes.ok ? sData : null;
+      if (failed) {
+        setDbError({
+          message: failed?.message ?? 'Erro ao carregar professores do banco de dados.',
+          code: failed?.code,
+          hint: failed?.hint,
+        });
+      }
+
+      setTeachers(tRes.ok && Array.isArray(tData) ? tData : []);
+      setClasses(cRes.ok && Array.isArray(cData) ? cData : []);
+      setSchools(sRes.ok && Array.isArray(sData) ? sData : []);
     } catch {
-      toast.error('Erro ao carregar professores.');
+      setDbError({
+        message: 'Falha de rede ao consultar professores no banco de dados.',
+        code: 'NETWORK_ERROR',
+      });
+      setTeachers([]);
     } finally {
       setLoadingList(false);
     }
@@ -122,7 +157,7 @@ export default function TeachersPage() {
   }, [teachers, search, statusFilter]);
 
   const activeCount = teachers.filter((t) => t.status === 'active').length;
-  const subjectsCount = new Set(teachers.map((t) => t.subject.toLowerCase())).size;
+  const withLoginCount = teachers.filter((t) => t.access_status === 'active').length;
 
   function toggleClassName(name: string) {
     setSelectedClassNames((prev) =>
@@ -130,10 +165,18 @@ export default function TeachersPage() {
     );
   }
 
+  function handleGeneratePassword() {
+    const generated = generateReadablePassword();
+    setValue('password', generated, { shouldValidate: true });
+    setShowPassword(true);
+    toast.info(`Senha sugerida preenchida: ${generated}`);
+  }
+
   function openCreateModal() {
     setEditingItem(null);
     setSelectedClassNames([]);
     setCustomClassesText('');
+    setShowPassword(true);
     reset({
       name: '',
       email: '',
@@ -141,12 +184,15 @@ export default function TeachersPage() {
       school_id: schools[0]?.id ?? '',
       phone: '',
       status: 'active',
+      password: '',
+      access_status: 'active',
     });
     setFormOpen(true);
   }
 
   function openEditModal(item: TeacherRecord) {
     setEditingItem(item);
+    setShowPassword(false);
     const knownClassNames = new Set(classes.map((c) => c.name));
     const parsedList = (item.classes_linked ?? '')
       .split(',')
@@ -164,12 +210,25 @@ export default function TeachersPage() {
       school_id: item.school_id ?? '',
       phone: item.phone ?? '',
       status: item.status ?? 'active',
+      password: '',
+      access_status: item.access_status === 'blocked' ? 'blocked' : 'active',
     });
     setFormOpen(true);
   }
 
   async function onSubmit(data: TeacherFormData) {
     if (!canManage) return;
+
+    const trimmedPassword = (data.password ?? '').trim();
+    if (trimmedPassword && trimmedPassword.length < 6) {
+      toast.error('A senha de acesso deve ter pelo menos 6 caracteres.');
+      return;
+    }
+    if (trimmedPassword && !data.email?.trim()) {
+      toast.error('Informe o e-mail de login para criar ou alterar a senha do professor.');
+      return;
+    }
+
     setSaving(true);
 
     const extras = customClassesText
@@ -180,6 +239,7 @@ export default function TeachersPage() {
 
     const payload = {
       ...data,
+      password: trimmedPassword || undefined,
       classes_linked: combinedClasses || 'Sem turma vinculada',
     };
 
@@ -196,7 +256,11 @@ export default function TeachersPage() {
           return;
         }
         setTeachers((prev) => prev.map((t) => (t.id === editingItem.id ? json : t)));
-        toast.success('Professor atualizado com sucesso!');
+        toast.success(
+          trimmedPassword
+            ? 'Professor e senha de acesso atualizados com sucesso!'
+            : 'Professor atualizado com sucesso!'
+        );
       } else {
         const res = await fetch('/api/teachers', {
           method: 'POST',
@@ -209,7 +273,11 @@ export default function TeachersPage() {
           return;
         }
         setTeachers((prev) => [json, ...prev]);
-        toast.success('Professor cadastrado e vinculado às turmas!');
+        toast.success(
+          trimmedPassword
+            ? 'Professor cadastrado e login liberado na plataforma!'
+            : 'Professor cadastrado com sucesso!'
+        );
       }
       setFormOpen(false);
       setEditingItem(null);
@@ -252,17 +320,29 @@ export default function TeachersPage() {
             Professores & Vínculos
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-1 leading-relaxed">
-            Cadastre docentes, gerencie disciplinas, contatos e vínculos com turmas escolares.
+            Cadastre docentes, gerencie turmas vinculadas e defina e-mail e senha de acesso ao
+            sistema.
           </p>
         </div>
 
         {canManage && (
-          <Button onClick={openCreateModal} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-1.5" />
-            Novo Professor
-          </Button>
+          <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+            <Link
+              href="/users"
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              <KeyRound className="h-4 w-4 text-blue-600" />
+              Gerenciar Usuários
+            </Link>
+            <Button onClick={openCreateModal} className="w-full sm:w-auto">
+              <Plus className="h-4 w-4 mr-1.5" />
+              Novo Professor
+            </Button>
+          </div>
         )}
       </div>
+
+      <DatabaseErrorBanner error={dbError} onRetry={loadAll} loading={loadingList} />
 
       {/* KPI Strip */}
       <div className="grid grid-cols-3 gap-3 sm:gap-5">
@@ -279,7 +359,7 @@ export default function TeachersPage() {
         <Card>
           <CardContent className="p-3.5 sm:p-5">
             <p className="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500 truncate">
-              Ativos
+              Docentes Ativos
             </p>
             <p className="font-numeric text-xl sm:text-2xl font-extrabold text-emerald-600 mt-1">
               {activeCount}
@@ -289,10 +369,10 @@ export default function TeachersPage() {
         <Card>
           <CardContent className="p-3.5 sm:p-5">
             <p className="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500 truncate">
-              Disciplinas
+              Com Login Ativo
             </p>
             <p className="font-numeric text-xl sm:text-2xl font-extrabold text-blue-600 mt-1">
-              {subjectsCount}
+              {withLoginCount}
             </p>
           </CardContent>
         </Card>
@@ -364,26 +444,40 @@ export default function TeachersPage() {
               {filteredTeachers.map((t) => (
                 <div
                   key={t.id}
-                  className="flex flex-col md:flex-row md:items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-slate-50/60 hover:border-blue-200 hover:bg-white p-3.5 sm:p-4 transition-colors"
+                  className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-slate-50/60 hover:border-blue-200 hover:bg-white p-3.5 sm:p-4 transition-colors"
                 >
                   <div className="flex items-start gap-3 min-w-0">
                     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600 mt-0.5">
                       <UserCheck className="h-5 w-5" />
                     </div>
                     <div className="min-w-0 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                         <h3 className="font-heading font-bold text-sm sm:text-[15px] text-slate-900">
                           {t.name}
                         </h3>
-                        <Badge variant={t.status === 'active' ? 'success' : 'secondary'}>
-                          {t.status === 'active' ? 'Ativo' : 'Inativo'}
-                        </Badge>
                         <Badge variant="default">{t.subject}</Badge>
+                        {t.access_status === 'active' ? (
+                          <Badge variant="success" className="gap-1">
+                            <ShieldCheck className="h-3 w-3" />
+                            Login Ativo
+                          </Badge>
+                        ) : t.access_status === 'blocked' ? (
+                          <Badge variant="destructive" className="gap-1">
+                            <ShieldOff className="h-3 w-3" />
+                            Acesso Bloqueado
+                          </Badge>
+                        ) : (
+                          <Badge variant="warning" className="gap-1">
+                            <KeyRound className="h-3 w-3" />
+                            Sem Senha
+                          </Badge>
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
                         <span className="inline-flex items-center gap-1">
                           <BookOpen className="h-3.5 w-3.5 text-slate-400" />
-                          Turmas: <strong className="font-medium text-slate-700">{t.classes_linked}</strong>
+                          Turmas:{' '}
+                          <strong className="font-medium text-slate-700">{t.classes_linked}</strong>
                         </span>
                         {t.email && (
                           <span className="inline-flex items-center gap-1 font-mono text-[11px] text-slate-600">
@@ -401,7 +495,7 @@ export default function TeachersPage() {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-slate-100">
+                  <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 shrink-0 pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-100">
                     <Button variant="ghost" size="sm" onClick={() => setViewingItem(t)}>
                       <Eye className="h-3.5 w-3.5 mr-1" />
                       Ver
@@ -410,7 +504,7 @@ export default function TeachersPage() {
                       <>
                         <Button variant="outline" size="sm" onClick={() => openEditModal(t)}>
                           <Pencil className="h-3.5 w-3.5 mr-1" />
-                          Editar
+                          Editar / Senha
                         </Button>
                         <Button
                           variant="outline"
@@ -442,10 +536,10 @@ export default function TeachersPage() {
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h2 className="font-heading text-lg font-bold text-slate-900">
-                  {editingItem ? 'Editar Professor' : 'Cadastrar Novo Professor'}
+                  {editingItem ? 'Editar Professor & Acesso' : 'Cadastrar Novo Professor'}
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Informe os dados do docente e selecione as turmas vinculadas.
+                  Configure os dados docentes e as credenciais de login para acesso ao painel.
                 </p>
               </div>
               <button
@@ -496,22 +590,21 @@ export default function TeachersPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-700">
-                    E-mail Institucional
-                  </label>
-                  <Input
-                    type="email"
-                    {...register('email')}
-                    placeholder="professor@jmbank.edu.br"
-                  />
-                  {errors.email && (
-                    <p className="text-xs font-medium text-red-600">{errors.email.message}</p>
-                  )}
+                  <label className="text-xs font-semibold text-slate-700">Telefone</label>
+                  <Input {...register('phone')} placeholder="(98) 99999-0000" />
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-700">Telefone</label>
-                  <Input {...register('phone')} placeholder="(98) 99999-0000" />
+                  <label className="text-xs font-semibold text-slate-700">
+                    Situação Funcional
+                  </label>
+                  <select
+                    {...register('status')}
+                    className="flex h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-base sm:text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  >
+                    <option value="active">Ativo</option>
+                    <option value="inactive">Inativo</option>
+                  </select>
                 </div>
               </div>
 
@@ -549,15 +642,92 @@ export default function TeachersPage() {
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700">Situação</label>
-                <select
-                  {...register('status')}
-                  className="flex h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-base sm:text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                >
-                  <option value="active">Ativo</option>
-                  <option value="inactive">Inativo</option>
-                </select>
+              {/* Login & Password Control Section */}
+              <div className="rounded-xl border border-blue-200/80 bg-blue-50/40 p-3.5 sm:p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <KeyRound className="h-4 w-4 text-blue-600" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-blue-900">
+                      Acesso & Senha do Professor
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleGeneratePassword}
+                    className="inline-flex items-center gap-1 rounded-md bg-white border border-blue-200 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50 cursor-pointer"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Gerar senha
+                  </button>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700">
+                    E-mail de Login Institucional
+                  </label>
+                  <Input
+                    type="email"
+                    {...register('email')}
+                    placeholder="professor@jmbank.edu.br"
+                    autoComplete="off"
+                    className="bg-white"
+                  />
+                  {errors.email && (
+                    <p className="text-xs font-medium text-red-600">{errors.email.message}</p>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700">
+                      {editingItem?.has_access ? 'Nova Senha (opcional)' : 'Senha de Acesso'}
+                    </label>
+                    <div className="relative">
+                      <Input
+                        type={showPassword ? 'text' : 'password'}
+                        {...register('password')}
+                        placeholder={
+                          editingItem?.has_access
+                            ? 'Vazio mantém a atual'
+                            : 'Mín. 6 caracteres'
+                        }
+                        autoComplete="new-password"
+                        className="bg-white pr-9 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        className="absolute right-2 top-2.5 p-1 rounded text-slate-400 hover:text-slate-700 cursor-pointer"
+                        aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                      >
+                        {showPassword ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700">
+                      Permissão de Login
+                    </label>
+                    <select
+                      {...register('access_status')}
+                      className="flex h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-base sm:text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    >
+                      <option value="active">Acesso Liberado</option>
+                      <option value="blocked">Acesso Bloqueado</option>
+                    </select>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Ao informar e-mail e senha, o professor já poderá entrar em{' '}
+                  <code className="font-mono bg-white px-1 rounded">/login</code> com perfil
+                  docente.
+                </p>
               </div>
 
               <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-3 border-t border-slate-100">
@@ -592,11 +762,15 @@ export default function TeachersPage() {
                 <h3 className="font-heading text-base sm:text-lg font-bold text-slate-900">
                   {viewingItem.name}
                 </h3>
-                <div className="flex items-center gap-1.5 mt-1">
+                <div className="flex flex-wrap items-center gap-1.5 mt-1">
                   <Badge variant="default">{viewingItem.subject}</Badge>
-                  <Badge variant={viewingItem.status === 'active' ? 'success' : 'secondary'}>
-                    {viewingItem.status === 'active' ? 'Ativo' : 'Inativo'}
-                  </Badge>
+                  {viewingItem.access_status === 'active' ? (
+                    <Badge variant="success">Login Ativo</Badge>
+                  ) : viewingItem.access_status === 'blocked' ? (
+                    <Badge variant="destructive">Acesso Bloqueado</Badge>
+                  ) : (
+                    <Badge variant="warning">Sem Senha</Badge>
+                  )}
                 </div>
               </div>
               <button
@@ -611,7 +785,7 @@ export default function TeachersPage() {
 
             <div className="rounded-xl bg-slate-50 p-4 space-y-2.5 text-xs sm:text-sm text-slate-700">
               <p className="flex items-center justify-between gap-2">
-                <span className="text-slate-500">E-mail</span>
+                <span className="text-slate-500">E-mail de Login</span>
                 <span className="font-mono text-xs">{viewingItem.email || 'Não informado'}</span>
               </p>
               <p className="flex items-center justify-between gap-2">
@@ -649,7 +823,7 @@ export default function TeachersPage() {
                   }}
                 >
                   <Pencil className="h-3.5 w-3.5 mr-1.5" />
-                  Editar
+                  Editar / Senha
                 </Button>
               )}
               <Button size="sm" onClick={() => setViewingItem(null)}>
@@ -664,7 +838,7 @@ export default function TeachersPage() {
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="Excluir Professor"
-        description="Tem certeza que deseja excluir este docente? Esta ação não poderá ser desfeita."
+        description="Tem certeza que deseja excluir este docente e revogar seu acesso ao sistema? Esta ação não poderá ser desfeita."
         itemName={deleteTarget?.name}
         loading={deleting}
         onCancel={() => setDeleteTarget(null)}

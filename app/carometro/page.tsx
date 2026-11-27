@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { DatabaseErrorBanner, type DbErrorState } from '@/components/ui/db-error-banner';
 import {
   Loader2,
   Camera,
@@ -42,74 +43,12 @@ interface ClassOption {
   name: string;
 }
 
-const DEMO_CLASSES: ClassOption[] = [
-  { id: 'turma-9a', name: '9º Ano A - Matutino' },
-  { id: 'turma-8b', name: '8º Ano B - Matutino' },
-  { id: 'turma-1em', name: '1º Ano EM - Integral' },
-];
-
-const DEMO_STUDENTS: Student[] = [
-  {
-    id: 'stu-1',
-    enrollment_number: '20260014',
-    name: 'Lucas Oliveira',
-    class_id: 'turma-9a',
-    class_name: '9º Ano A - Matutino',
-    status: 'active',
-    lgpd_consent: true,
-  },
-  {
-    id: 'stu-2',
-    enrollment_number: '20260018',
-    name: 'Beatriz Santos',
-    class_id: 'turma-9a',
-    class_name: '9º Ano A - Matutino',
-    status: 'active',
-    lgpd_consent: true,
-  },
-  {
-    id: 'stu-3',
-    enrollment_number: '20260022',
-    name: 'Gabriel Ferreira',
-    class_id: 'turma-8b',
-    class_name: '8º Ano B - Matutino',
-    status: 'active',
-    lgpd_consent: true,
-  },
-  {
-    id: 'stu-4',
-    enrollment_number: '20260029',
-    name: 'Mariana Costa',
-    class_id: 'turma-8b',
-    class_name: '8º Ano B - Matutino',
-    status: 'active',
-    lgpd_consent: true,
-  },
-  {
-    id: 'stu-5',
-    enrollment_number: '20260035',
-    name: 'Pedro Henrique Lima',
-    class_id: 'turma-1em',
-    class_name: '1º Ano EM - Integral',
-    status: 'active',
-    lgpd_consent: true,
-  },
-  {
-    id: 'stu-6',
-    enrollment_number: '20260041',
-    name: 'Júlia Almeida',
-    class_id: 'turma-1em',
-    class_name: '1º Ano EM - Integral',
-    status: 'transferred',
-    lgpd_consent: true,
-  },
-];
-
 export default function CarometroPage() {
-  const [students, setStudents] = useState<Student[]>(DEMO_STUDENTS);
-  const [classes, setClasses] = useState<ClassOption[]>(DEMO_CLASSES);
+  const [students, setStudents] = useState<Student[]>([]);
+  const [classes, setClasses] = useState<ClassOption[]>([]);
   const [photosMap, setPhotosMap] = useState<Record<string, StudentPhotoRecord>>({});
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [dbError, setDbError] = useState<DbErrorState | null>(null);
   const [savingStudentId, setSavingStudentId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [classFilter, setClassFilter] = useState('');
@@ -119,41 +58,51 @@ export default function CarometroPage() {
 
   const canManagePhotos = ['super_admin', 'school_admin', 'teacher'].includes(role);
 
+  async function loadCarometroData() {
+    setLoading(true);
+    setDbError(null);
+    try {
+      const [clsRes, stuRes, dbPhotos] = await Promise.all([
+        fetch('/api/classes', { cache: 'no-store' }),
+        fetch('/api/students', { cache: 'no-store' }),
+        fetchAllStudentPhotos(),
+      ]);
+
+      const clsJson = await clsRes.json().catch(() => ({}));
+      const stuJson = await stuRes.json().catch(() => ({}));
+
+      if (!stuRes.ok) {
+        setDbError({
+          message: stuJson?.message ?? 'Erro ao carregar alunos do banco de dados.',
+          code: stuJson?.code,
+          hint: stuJson?.hint,
+        });
+        setStudents([]);
+        return;
+      }
+
+      if (clsRes.ok && Array.isArray(clsJson)) {
+        setClasses(clsJson);
+      }
+      if (Array.isArray(stuJson)) {
+        setStudents(stuJson as Student[]);
+      }
+      setPhotosMap(dbPhotos);
+    } catch {
+      setDbError({
+        message: 'Falha de rede ao consultar os alunos no banco de dados.',
+        code: 'NETWORK_ERROR',
+      });
+      setStudents([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     const demo = getStoredDemoUser();
     if (demo) setRole(demo.role);
-
-    // Immediately load cached photos, then sync from backend database
-    setPhotosMap(getCachedStudentPhotos());
-
-    (async () => {
-      setLoading(true);
-      try {
-        const [dbPhotos, clsRes, stuRes] = await Promise.all([
-          fetchAllStudentPhotos(),
-          fetch('/api/classes', { cache: 'no-store' }),
-          fetch('/api/students', { cache: 'no-store' }),
-        ]);
-        setPhotosMap(dbPhotos);
-
-        if (clsRes.ok) {
-          const classData = await clsRes.json();
-          if (Array.isArray(classData) && classData.length > 0) {
-            setClasses(classData);
-          }
-        }
-        if (stuRes.ok) {
-          const studentData = await stuRes.json();
-          if (Array.isArray(studentData) && studentData.length > 0) {
-            setStudents(studentData as Student[]);
-          }
-        }
-      } catch {
-        // Keep demo students + saved photos
-      } finally {
-        setLoading(false);
-      }
-    })();
+    loadCarometroData();
 
     const handleSync = () => setPhotosMap(getCachedStudentPhotos());
     window.addEventListener('jmbank-photos-update', handleSync);
@@ -191,8 +140,8 @@ export default function CarometroPage() {
         [studentId]: savedRecord,
       }));
       toast.success('Fotografia salva no banco de dados com sucesso!');
-    } catch {
-      toast.error('Erro ao salvar fotografia.');
+    } catch (e: any) {
+      toast.error(e?.message ?? 'Erro ao salvar fotografia no banco de dados.');
     } finally {
       setSavingStudentId(null);
     }
@@ -208,9 +157,12 @@ export default function CarometroPage() {
         delete next[studentId];
         return next;
       });
+      setStudents((prev) =>
+        prev.map((s) => (s.id === studentId ? { ...s, photo_path: null } : s))
+      );
       toast.success('Fotografia removida do banco de dados.');
-    } catch {
-      toast.error('Erro ao remover fotografia.');
+    } catch (e: any) {
+      toast.error(e?.message ?? 'Erro ao remover fotografia.');
     } finally {
       setSavingStudentId(null);
     }
@@ -229,7 +181,7 @@ export default function CarometroPage() {
   }
 
   return (
-    <main className="p-4 sm:p-6 lg:p-10 space-y-4 sm:space-y-6 max-w-7xl mx-auto w-full">
+    <main className="p-4 sm:p-6 lg:p-10 space-y-4 sm:space-y-6 max-w-7xl mx-auto w-full min-w-0">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
@@ -243,11 +195,12 @@ export default function CarometroPage() {
             Carômetro Escolar
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 leading-relaxed mt-1">
-            As fotografias enviadas são salvas de forma persistente no banco de dados e exibidas
-            automaticamente para todos os usuários autorizados.
+            Exibindo os alunos reais cadastrados no banco de dados e suas fotografias persistidas.
           </p>
         </div>
       </div>
+
+      <DatabaseErrorBanner error={dbError} onRetry={loadCarometroData} loading={loading} />
 
       {/* Filters Bar */}
       <Card>
@@ -308,8 +261,20 @@ export default function CarometroPage() {
       {loading ? (
         <div className="flex items-center gap-2 p-8 text-slate-600 text-sm">
           <Loader2 className="animate-spin h-5 w-5 text-blue-600" />
-          Carregando carômetro e fotos salvas...
+          Carregando carômetro e fotos do banco de dados...
         </div>
+      ) : !dbError && filteredStudents.length === 0 ? (
+        <Card>
+          <CardContent className="p-8 text-center space-y-2">
+            <User className="h-8 w-8 text-slate-400 mx-auto" />
+            <p className="text-sm font-semibold text-slate-700">
+              Nenhum aluno encontrado no carômetro
+            </p>
+            <p className="text-xs text-slate-500">
+              Cadastre alunos em /students ou ajuste os filtros acima.
+            </p>
+          </CardContent>
+        </Card>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4 md:gap-5">
           {filteredStudents.map((s) => {
@@ -329,17 +294,12 @@ export default function CarometroPage() {
                 key={s.id}
                 className="flex flex-col items-center text-center p-3 sm:p-5 hover:border-blue-300 hover:shadow-md transition-all"
               >
-                {/* Avatar / Saved Photo */}
                 <div className="relative mb-2.5 sm:mb-3">
                   <div className="w-18 h-18 sm:w-24 sm:h-24 rounded-xl sm:rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-100 border-2 border-white shadow-sm overflow-hidden flex items-center justify-center">
                     {isSaving ? (
                       <Loader2 className="h-5 w-5 sm:h-6 sm:w-6 animate-spin text-blue-600" />
                     ) : photoUrl ? (
-                      <img
-                        src={photoUrl}
-                        alt={s.name}
-                        className="w-full h-full object-cover"
-                      />
+                      <img src={photoUrl} alt={s.name} className="w-full h-full object-cover" />
                     ) : (
                       <span className="text-lg sm:text-xl font-bold text-blue-700">{initials}</span>
                     )}
@@ -361,8 +321,10 @@ export default function CarometroPage() {
                   )}
                 </div>
 
-                {/* Info */}
-                <h3 className="font-heading font-bold text-[13px] sm:text-sm text-slate-900 line-clamp-1 w-full" title={s.name}>
+                <h3
+                  className="font-heading font-bold text-[13px] sm:text-sm text-slate-900 line-clamp-1 w-full"
+                  title={s.name}
+                >
                   {s.name}
                 </h3>
                 <p className="text-[11px] sm:text-xs text-slate-500 font-mono tabular-nums mt-0.5 truncate w-full">
@@ -378,16 +340,16 @@ export default function CarometroPage() {
                       s.status === 'active'
                         ? 'success'
                         : s.status === 'transferred'
-                        ? 'warning'
-                        : 'secondary'
+                          ? 'warning'
+                          : 'secondary'
                     }
                     className="text-[11px] px-2 py-0.5"
                   >
                     {s.status === 'active'
                       ? 'Ativo'
                       : s.status === 'transferred'
-                      ? 'Transferido'
-                      : 'Inativo'}
+                        ? 'Transferido'
+                        : 'Inativo'}
                   </Badge>
                   {photoUrl && (
                     <span
@@ -439,8 +401,7 @@ export default function CarometroPage() {
                   </p>
                   {photosMap[selectedStudent.id] && (
                     <p className="text-[11px] text-emerald-700 font-medium mt-0.5 truncate">
-                      ✓ Foto salva no banco em{' '}
-                      {new Date(photosMap[selectedStudent.id].updatedAt).toLocaleDateString('pt-BR')}
+                      ✓ Foto salva no banco de dados
                     </p>
                   )}
                 </div>

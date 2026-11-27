@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { DatabaseErrorBanner, type DbErrorState } from '@/components/ui/db-error-banner';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@/lib/zod-resolver';
@@ -51,6 +52,7 @@ export default function ClassesPage() {
   const [grades, setGrades] = useState<GradeLevelRecord[]>([]);
   const [schools, setSchools] = useState<SchoolRecord[]>([]);
   const [loadingList, setLoadingList] = useState(true);
+  const [dbError, setDbError] = useState<DbErrorState | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [role, setRole] = useState<string>('coordinator');
@@ -87,17 +89,44 @@ export default function ClassesPage() {
 
   async function loadAll() {
     setLoadingList(true);
+    setDbError(null);
     try {
       const [clsRes, grdRes, schRes] = await Promise.all([
         fetch('/api/classes', { cache: 'no-store' }),
         fetch('/api/grade-levels', { cache: 'no-store' }),
         fetch('/api/schools', { cache: 'no-store' }),
       ]);
-      if (clsRes.ok) setClasses(await clsRes.json());
-      if (grdRes.ok) setGrades(await grdRes.json());
-      if (schRes.ok) setSchools(await schRes.json());
+      const [clsData, grdData, schData] = await Promise.all([
+        clsRes.json().catch(() => ({})),
+        grdRes.json().catch(() => ({})),
+        schRes.json().catch(() => ({})),
+      ]);
+
+      const failed = !clsRes.ok
+        ? clsData
+        : !grdRes.ok
+          ? grdData
+          : !schRes.ok
+            ? schData
+            : null;
+
+      if (failed) {
+        setDbError({
+          message: failed?.message ?? 'Erro ao carregar turmas do banco de dados.',
+          code: failed?.code,
+          hint: failed?.hint,
+        });
+      }
+
+      setClasses(clsRes.ok && Array.isArray(clsData) ? clsData : []);
+      setGrades(grdRes.ok && Array.isArray(grdData) ? grdData : []);
+      setSchools(schRes.ok && Array.isArray(schData) ? schData : []);
     } catch {
-      toast.error('Erro ao carregar dados das turmas.');
+      setDbError({
+        message: 'Falha de rede ao consultar turmas no banco de dados.',
+        code: 'NETWORK_ERROR',
+      });
+      setClasses([]);
     } finally {
       setLoadingList(false);
     }
@@ -253,6 +282,8 @@ export default function ClassesPage() {
           </Button>
         )}
       </div>
+
+      <DatabaseErrorBanner error={dbError} onRetry={loadAll} loading={loadingList} />
 
       {/* KPI Strip */}
       <div className="grid grid-cols-3 gap-3 sm:gap-5">

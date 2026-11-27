@@ -1,4 +1,5 @@
-import { cookies } from 'next/headers';
+import { createClient as createSupabaseAdmin } from '@supabase/supabase-js';
+import { getSupabaseServiceRoleKey, getSupabaseUrl } from './env';
 
 export type Role =
   | 'super_admin'
@@ -44,6 +45,7 @@ export const rolePermissions: Record<Role, string[]> = {
   ],
   school_admin: [
     'manage_school',
+    'manage_users',
     'manage_grade_levels',
     'manage_classes',
     'manage_teachers',
@@ -125,39 +127,55 @@ export const rolePermissions: Record<Role, string[]> = {
   ],
 };
 
-/** Verify that the current user has at least one of the required permissions. */
+/** Verify that the current Supabase Auth user has at least one of the required permissions. */
 export async function authorize(
   supabase: any,
   requiredPermissions: string[],
 ): Promise<Role> {
-  const { data: { user } } = await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthenticated');
+  }
 
   let role: Role | null = null;
 
-  if (user) {
-    const { data: profile } = await supabase
+  // Prefer service role client for reading `users` table if configured so RLS never hides own role
+  const url = getSupabaseUrl();
+  const serviceKey = getSupabaseServiceRoleKey();
+  const lookupClient =
+    url && serviceKey
+      ? createSupabaseAdmin(url, serviceKey, {
+          auth: { autoRefreshToken: false, persistSession: false },
+        })
+      : supabase;
+
+  const { data: profileByUid } = await lookupClient
+    .from('users')
+    .select('role, status')
+    .eq('auth_uid', user.id)
+    .maybeSingle();
+
+  let profile = profileByUid;
+  if (!profile && user.email) {
+    const { data: profileByEmail } = await lookupClient
       .from('users')
-      .select('role')
-      .eq('auth_uid', user.id)
-      .single();
-    if (profile?.role) {
-      role = profile.role as Role;
-    } else if (user.user_metadata?.role) {
-      role = user.user_metadata.role as Role;
-    }
+      .select('role, status')
+      .eq('email', user.email.toLowerCase())
+      .maybeSingle();
+    profile = profileByEmail;
   }
 
-  // Fallback to demo cookie session if present
-  if (!role) {
-    try {
-      const cookieStore = await cookies();
-      const demoRole = cookieStore.get('jmbank_role')?.value as Role | undefined;
-      if (demoRole && rolePermissions[demoRole]) {
-        role = demoRole;
-      }
-    } catch {
-      // ignore if cookies() not available
-    }
+  if (profile?.status === 'blocked' || profile?.status === 'inactive') {
+    throw new Error('Account blocked');
+  }
+
+  if (profile?.role) {
+    role = profile.role as Role;
+  } else if (user.user_metadata?.role) {
+    role = user.user_metadata.role as Role;
   }
 
   if (!role) {

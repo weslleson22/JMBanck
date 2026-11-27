@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { supabaseServer } from '@/lib/supabase';
 import { authorize } from '@/lib/role';
-import { readSchoolStructureDb, writeSchoolStructureDb } from '@/lib/school-db';
+import {
+  dbErrorResponse,
+  getServerDbContext,
+  updateWithSchemaFallback,
+} from '@/lib/supabase-data';
 
 const updateClassSchema = z.object({
   name: z.string().trim().min(2, 'Nome da turma é obrigatório').optional(),
@@ -15,20 +18,34 @@ const updateClassSchema = z.object({
   status: z.enum(['active', 'inactive']).optional(),
 });
 
+function normalizeClass(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    grade_level_id: row.grade_level_id ?? '',
+    school_id: row.school_id ?? '',
+    shift: row.shift ?? 'Matutino',
+    academic_year: row.academic_year ? String(row.academic_year) : '2026',
+    room: row.room ?? undefined,
+    capacity: row.capacity != null ? Number(row.capacity) : undefined,
+    status: row.status === 'inactive' ? 'inactive' : 'active',
+    created_at: row.created_at ?? new Date().toISOString(),
+  };
+}
+
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    const db = await readSchoolStructureDb();
-    const item = db.classes.find((c) => c.id === id);
-    if (!item) {
-      return NextResponse.json({ message: 'Turma não encontrada' }, { status: 404 });
-    }
-    return NextResponse.json(item);
+    const { db } = await getServerDbContext();
+    const { data, error } = await db.from('classes').select('*').eq('id', id).maybeSingle();
+    if (error) return dbErrorResponse(error, 'turma');
+    if (!data) return NextResponse.json({ message: 'Turma não encontrada' }, { status: 404 });
+    return NextResponse.json(normalizeClass(data));
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro interno' }, { status: 500 });
+    return dbErrorResponse(e, 'turma');
   }
 }
 
@@ -38,9 +55,9 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-    const supabase = await supabaseServer();
+    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(supabase, ['manage_classes']);
+      await authorize(authClient, ['manage_classes']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para editar turmas' },
@@ -57,41 +74,36 @@ export async function PUT(
       );
     }
 
-    const db = await readSchoolStructureDb();
-    const idx = db.classes.findIndex((c) => c.id === id);
-    if (idx === -1) {
-      return NextResponse.json({ message: 'Turma não encontrada' }, { status: 404 });
-    }
+    const corePayload: Record<string, any> = {};
+    if (parsed.data.name !== undefined) corePayload.name = parsed.data.name;
+    if (parsed.data.grade_level_id !== undefined)
+      corePayload.grade_level_id = parsed.data.grade_level_id;
+    if (parsed.data.school_id !== undefined) corePayload.school_id = parsed.data.school_id;
 
-    const updated = {
-      ...db.classes[idx],
-      ...parsed.data,
+    const fullPayload: Record<string, any> = {
+      ...corePayload,
+      ...(parsed.data.shift !== undefined ? { shift: parsed.data.shift } : {}),
+      ...(parsed.data.academic_year !== undefined
+        ? { academic_year: parsed.data.academic_year }
+        : {}),
+      ...(parsed.data.room !== undefined ? { room: parsed.data.room || null } : {}),
+      ...(parsed.data.capacity !== undefined ? { capacity: parsed.data.capacity } : {}),
+      ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
     };
-    db.classes[idx] = updated;
 
-    // Keep linked students' class_name synchronized when class name changes
-    db.students = db.students.map((s) =>
-      s.class_id === id ? { ...s, class_name: updated.name } : s
+    const { data, error } = await updateWithSchemaFallback(
+      db,
+      'classes',
+      id,
+      fullPayload,
+      corePayload
     );
 
-    await writeSchoolStructureDb(db);
-
-    try {
-      await supabase
-        .from('classes')
-        .update({
-          name: updated.name,
-          grade_level_id: updated.grade_level_id,
-          school_id: updated.school_id,
-        })
-        .eq('id', id);
-    } catch {
-      // Local DB already saved
-    }
-
-    return NextResponse.json(updated);
+    if (error) return dbErrorResponse(error, 'atualização de turma');
+    if (!data) return NextResponse.json({ message: 'Turma não encontrada' }, { status: 404 });
+    return NextResponse.json(normalizeClass(data));
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro ao atualizar turma' }, { status: 500 });
+    return dbErrorResponse(e, 'atualização de turma');
   }
 }
 
@@ -103,9 +115,9 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const supabase = await supabaseServer();
+    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(supabase, ['manage_classes']);
+      await authorize(authClient, ['manage_classes']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para excluir turmas' },
@@ -113,24 +125,10 @@ export async function DELETE(
       );
     }
 
-    const db = await readSchoolStructureDb();
-    const exists = db.classes.some((c) => c.id === id);
-    if (!exists) {
-      return NextResponse.json({ message: 'Turma não encontrada' }, { status: 404 });
-    }
-
-    db.classes = db.classes.filter((c) => c.id !== id);
-    await writeSchoolStructureDb(db);
-
-    try {
-      await supabase.from('classes').delete().eq('id', id);
-    } catch {
-      // Local DB already saved
-    }
-
+    const { error } = await db.from('classes').delete().eq('id', id);
+    if (error) return dbErrorResponse(error, 'exclusão de turma');
     return NextResponse.json({ ok: true, id });
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro ao excluir turma' }, { status: 500 });
+    return dbErrorResponse(e, 'exclusão de turma');
   }
 }
-

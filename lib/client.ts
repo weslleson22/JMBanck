@@ -9,6 +9,16 @@ export interface DemoUser {
   roleLabel: string;
 }
 
+export const ROLE_LABELS: Record<Role, string> = {
+  super_admin: 'Super Administrador',
+  school_admin: 'Diretor / Admin Escolar',
+  coordinator: 'Coordenador Pedagógico',
+  teacher: 'Professor',
+  student: 'Aluno',
+  guardian: 'Responsável',
+  treasury: 'Operador / Tesouraria',
+};
+
 export const ROLE_HOME_PATH: Record<Role, string> = {
   super_admin: '/dashboard/admin',
   school_admin: '/dashboard/admin',
@@ -37,6 +47,7 @@ export const ROLE_ALLOWED_ROUTES: Record<Role, string[]> = {
     '/classes',
     '/teachers',
     '/students',
+    '/users',
     '/wallets',
     '/missions',
     '/rewards',
@@ -51,6 +62,7 @@ export const ROLE_ALLOWED_ROUTES: Record<Role, string[]> = {
     '/classes',
     '/teachers',
     '/students',
+    '/users',
     '/wallets',
     '/missions',
     '/rewards',
@@ -206,10 +218,16 @@ export function setStoredDemoUser(user: DemoUser | null) {
 }
 
 export function createClient() {
-  return createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
-  );
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key =
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) {
+    throw new Error(
+      'Variáveis de ambiente do Supabase ausentes no cliente (NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY).'
+    );
+  }
+  return createBrowserClient(url, key);
 }
 
 export const supabaseClient = createClient;

@@ -1,0 +1,103 @@
+{
+  "schools": [
+    {
+      "id": "esc-alpha",
+      "name": "Colégio Estadual Educa Mais Alpha",
+      "code": "INEP-21048290",
+      "city": "São Luís - MA",
+      "academic_year": "2026",
+      "director_name": "Helena Costa",
+      "status": "active",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    }
+  ],
+  "gradeLevels": [
+    {
+      "id": "gl-3",
+      "name": "2º Ano - Ensino Médio 200MSI",
+      "stage": "Ensino Médio",
+      "order_index": 10,
+      "description": "Ingresso no Ensino Médio com trilhas de empreendedorismo e educação financeira.",
+      "status": "active",
+      "created_at": "2026-01-10T08:07:00.000Z"
+    },
+    {
+      "id": "gl-1795744681561",
+      "name": "3º Ano - Ensino Médio - 300MSI",
+      "stage": "Ensino Médio",
+      "order_index": 11,
+      "status": "active",
+      "created_at": "2026-11-27T01:58:01.561Z",
+      "description": ""
+    }
+  ],
+  "classes": [
+    {
+      "id": "turma-1795744764765",
+      "name": "200MSI",
+      "grade_level_id": "gl-3",
+      "school_id": "esc-alpha",
+      "shift": "Integral",
+      "academic_year": "2026",
+      "room": "200",
+      "capacity": 35,
+      "status": "active",
+      "created_at": "2026-11-27T01:59:24.765Z"
+    },
+    {
+      "id": "turma-1795744733455",
+      "name": "300MSI",
+      "grade_level_id": "gl-1795744681561",
+      "school_id": "esc-alpha",
+      "shift": "Integral",
+      "academic_year": "2026",
+      "room": "300",
+      "capacity": 35,
+      "status": "active",
+      "created_at": "2026-11-27T01:58:53.455Z"
+    }
+  ],
+  "teachers": [
+    {
+      "id": "prof-1795744265559",
+      "name": "Prof. Wesleson",
+      "email": "wes@gmail.com",
+      "subject": "TI",
+      "classes_linked": "300MSI, 200MSI",
+      "school_id": "esc-alpha",
+      "phone": "98984971547",
+      "status": "active",
+      "created_at": "2026-11-27T01:51:05.559Z",
+      "has_access": false,
+      "access_status": "none"
+    },
+    {
+      "id": "prof-2",
+      "name": "Prof. Ricardo Gomes",
+      "email": "Rogerio@jmbank.edu.br",
+      "subject": "TI",
+      "classes_linked": "200MSI, 300MSI",
+      "school_id": "esc-alpha",
+      "phone": "(98) 98844-5566",
+      "status": "active",
+      "created_at": "2026-01-16T08:15:00.000Z",
+      "has_access": false,
+      "access_status": "none"
+    }
+  ],
+  "students": [
+    {
+      "id": "stu-2",
+      "name": "Beatriz Santos",
+      "enrollment_number": "20260018",
+      "class_id": "turma-9a",
+      "class_name": "9º Ano A - Matutino",
+      "guardian_name": "Fernanda Santos",
+      "guardian_contact": "(98) 99145-6677",
+      "birth_date": "2011-09-22",
+      "status": "active",
+      "lgpd_consent": true,
+      "created_at": "2026-01-20T10:15:00.000Z"
+    }
+  ]
+}

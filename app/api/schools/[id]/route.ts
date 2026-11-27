@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { supabaseServer } from '@/lib/supabase';
 import { authorize } from '@/lib/role';
-import { readSchoolStructureDb, writeSchoolStructureDb } from '@/lib/school-db';
+import {
+  dbErrorResponse,
+  getServerDbContext,
+  updateWithSchemaFallback,
+} from '@/lib/supabase-data';
 
 const updateSchoolSchema = z.object({
   name: z.string().trim().min(2, 'Nome da escola é obrigatório').optional(),
@@ -13,20 +16,32 @@ const updateSchoolSchema = z.object({
   status: z.enum(['active', 'inactive']).optional(),
 });
 
+function normalizeSchool(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    code: row.code ?? undefined,
+    city: row.city ?? undefined,
+    academic_year: row.academic_year ? String(row.academic_year) : '2026',
+    director_name: row.director_name ?? undefined,
+    status: row.status === 'inactive' ? 'inactive' : 'active',
+    created_at: row.created_at ?? new Date().toISOString(),
+  };
+}
+
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    const db = await readSchoolStructureDb();
-    const school = db.schools.find((s) => s.id === id);
-    if (!school) {
-      return NextResponse.json({ message: 'Escola não encontrada' }, { status: 404 });
-    }
-    return NextResponse.json(school);
+    const { db } = await getServerDbContext();
+    const { data, error } = await db.from('schools').select('*').eq('id', id).maybeSingle();
+    if (error) return dbErrorResponse(error, 'escola');
+    if (!data) return NextResponse.json({ message: 'Escola não encontrada' }, { status: 404 });
+    return NextResponse.json(normalizeSchool(data));
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro interno' }, { status: 500 });
+    return dbErrorResponse(e, 'escola');
   }
 }
 
@@ -36,9 +51,9 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-    const supabase = await supabaseServer();
+    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(supabase, ['manage_schools', 'manage_school']);
+      await authorize(authClient, ['manage_schools', 'manage_school']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para editar escolas' },
@@ -55,28 +70,31 @@ export async function PUT(
       );
     }
 
-    const db = await readSchoolStructureDb();
-    const idx = db.schools.findIndex((s) => s.id === id);
-    if (idx === -1) {
-      return NextResponse.json({ message: 'Escola não encontrada' }, { status: 404 });
-    }
+    const fullPayload: Record<string, any> = {};
+    if (parsed.data.name !== undefined) fullPayload.name = parsed.data.name;
+    if (parsed.data.code !== undefined) fullPayload.code = parsed.data.code || null;
+    if (parsed.data.city !== undefined) fullPayload.city = parsed.data.city || null;
+    if (parsed.data.academic_year !== undefined) fullPayload.academic_year = parsed.data.academic_year;
+    if (parsed.data.director_name !== undefined)
+      fullPayload.director_name = parsed.data.director_name || null;
+    if (parsed.data.status !== undefined) fullPayload.status = parsed.data.status;
 
-    const updated = {
-      ...db.schools[idx],
-      ...parsed.data,
-    };
-    db.schools[idx] = updated;
-    await writeSchoolStructureDb(db);
+    const corePayload: Record<string, any> = {};
+    if (parsed.data.name !== undefined) corePayload.name = parsed.data.name;
 
-    try {
-      await supabase.from('schools').update({ name: updated.name }).eq('id', id);
-    } catch {
-      // Local JSON DB already updated
-    }
+    const { data, error } = await updateWithSchemaFallback(
+      db,
+      'schools',
+      id,
+      fullPayload,
+      corePayload
+    );
 
-    return NextResponse.json(updated);
+    if (error) return dbErrorResponse(error, 'atualização de escola');
+    if (!data) return NextResponse.json({ message: 'Escola não encontrada' }, { status: 404 });
+    return NextResponse.json(normalizeSchool(data));
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro ao atualizar escola' }, { status: 500 });
+    return dbErrorResponse(e, 'atualização de escola');
   }
 }
 
@@ -88,9 +106,9 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const supabase = await supabaseServer();
+    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(supabase, ['manage_schools', 'manage_school']);
+      await authorize(authClient, ['manage_schools', 'manage_school']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para excluir escolas' },
@@ -98,24 +116,10 @@ export async function DELETE(
       );
     }
 
-    const db = await readSchoolStructureDb();
-    const exists = db.schools.some((s) => s.id === id);
-    if (!exists) {
-      return NextResponse.json({ message: 'Escola não encontrada' }, { status: 404 });
-    }
-
-    db.schools = db.schools.filter((s) => s.id !== id);
-    await writeSchoolStructureDb(db);
-
-    try {
-      await supabase.from('schools').delete().eq('id', id);
-    } catch {
-      // Local JSON DB already updated
-    }
-
+    const { error } = await db.from('schools').delete().eq('id', id);
+    if (error) return dbErrorResponse(error, 'exclusão de escola');
     return NextResponse.json({ ok: true, id });
   } catch (e: any) {
-    return NextResponse.json({ message: e?.message ?? 'Erro ao excluir escola' }, { status: 500 });
+    return dbErrorResponse(e, 'exclusão de escola');
   }
 }
-

@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { DatabaseErrorBanner, type DbErrorState } from '@/components/ui/db-error-banner';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@/lib/zod-resolver';
@@ -41,6 +42,7 @@ type SchoolFormData = z.infer<typeof schoolSchema>;
 export default function SchoolsPage() {
   const [schools, setSchools] = useState<SchoolRecord[]>([]);
   const [loadingList, setLoadingList] = useState(true);
+  const [dbError, setDbError] = useState<DbErrorState | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [role, setRole] = useState<string>('super_admin');
@@ -76,14 +78,26 @@ export default function SchoolsPage() {
 
   async function loadSchools() {
     setLoadingList(true);
+    setDbError(null);
     try {
       const res = await fetch('/api/schools', { cache: 'no-store' });
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) setSchools(data);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDbError({
+          message: data?.message ?? 'Erro ao carregar escolas do banco de dados.',
+          code: data?.code,
+          hint: data?.hint,
+        });
+        setSchools([]);
+        return;
       }
+      if (Array.isArray(data)) setSchools(data);
     } catch {
-      toast.error('Não foi possível carregar as escolas.');
+      setDbError({
+        message: 'Falha de rede ao consultar escolas no banco de dados.',
+        code: 'NETWORK_ERROR',
+      });
+      setSchools([]);
     } finally {
       setLoadingList(false);
     }
@@ -223,6 +237,8 @@ export default function SchoolsPage() {
       </div>
 
       {/* KPI Strip */}
+      <DatabaseErrorBanner error={dbError} onRetry={loadSchools} loading={loadingList} />
+
       <div className="grid grid-cols-3 gap-3 sm:gap-5">
         <Card>
           <CardContent className="p-3.5 sm:p-5">

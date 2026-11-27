@@ -1,32 +1,50 @@
-import { supabaseServer } from '@/lib/supabase';
 import { authorize } from '@/lib/role';
+import { dbErrorResponse, getServerDbContext } from '@/lib/supabase-data';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
 const schema = z.object({
-  name: z.string().min(2),
+  name: z.string().trim().min(2, 'Nome do ano letivo é obrigatório'),
   start_date: z.string().optional(),
   end_date: z.string().optional(),
 });
 
-type AcademicYear = z.infer<typeof schema>;
-
 export async function POST(req: Request) {
-  const supabase = await supabaseServer();
-  await authorize(supabase, ['manage_academic_years']);
-  const body = await req.json();
-  const parsed = schema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ message: 'Invalid data', error: parsed.error.format() }, { status: 400 });
-  const { data, error } = await supabase.from('academic_years').insert(parsed.data).select();
-  if (error) return NextResponse.json({ message: error.message }, { status: 500 });
-  return NextResponse.json(data[0]);
+  try {
+    const { authClient, db } = await getServerDbContext();
+    await authorize(authClient, ['manage_academic_years']);
+    const body = await req.json();
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { message: 'Dados inválidos.', error: parsed.error.format() },
+        { status: 400 }
+      );
+    }
+    const { data, error } = await db.from('academic_years').insert(parsed.data).select().single();
+    if (error) return dbErrorResponse(error, 'academic_years');
+    return NextResponse.json(data, { status: 201 });
+  } catch (e: any) {
+    const msg = String(e?.message ?? '');
+    if (msg === 'Unauthorized' || msg === 'Forbidden') {
+      return NextResponse.json({ message: 'Acesso não autorizado.' }, { status: 403 });
+    }
+    return dbErrorResponse(e, 'academic_years');
+  }
 }
 
 export async function GET() {
-  const supabase = await supabaseServer();
-  await authorize(supabase, ['manage_academic_years']);
-  const { data, error } = await supabase.from('academic_years').select('*');
-  if (error) return NextResponse.json({ message: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  try {
+    const { authClient, db } = await getServerDbContext();
+    await authorize(authClient, ['manage_academic_years']);
+    const { data, error } = await db.from('academic_years').select('*');
+    if (error) return dbErrorResponse(error, 'academic_years');
+    return NextResponse.json(data ?? []);
+  } catch (e: any) {
+    const msg = String(e?.message ?? '');
+    if (msg === 'Unauthorized' || msg === 'Forbidden') {
+      return NextResponse.json({ message: 'Acesso não autorizado.' }, { status: 403 });
+    }
+    return dbErrorResponse(e, 'academic_years');
+  }
 }
-

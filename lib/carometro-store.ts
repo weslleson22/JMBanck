@@ -32,20 +32,18 @@ function setCachedStudentPhotos(photos: Record<string, StudentPhotoRecord>) {
  * Fetches all saved student photos from the backend database and merges with local cache.
  */
 export async function fetchAllStudentPhotos(): Promise<Record<string, StudentPhotoRecord>> {
-  const cached = getCachedStudentPhotos();
   try {
     const res = await fetch('/api/carometro/photos', { cache: 'no-store' });
     if (res.ok) {
       const json = await res.json();
       const serverPhotos = (json.photos ?? {}) as Record<string, StudentPhotoRecord>;
-      const merged = { ...cached, ...serverPhotos };
-      setCachedStudentPhotos(merged);
-      return merged;
+      setCachedStudentPhotos(serverPhotos);
+      return serverPhotos;
     }
   } catch {
-    // Return cached photos if offline
+    // Handled by caller via API status
   }
-  return cached;
+  return {};
 }
 
 /**
@@ -99,19 +97,7 @@ export async function saveStudentPhoto(params: {
   updatedBy?: string;
 }): Promise<StudentPhotoRecord> {
   const photoDataUrl = await fileToCompressedDataUrl(params.file);
-  const record: StudentPhotoRecord = {
-    studentId: params.studentId,
-    photoDataUrl,
-    updatedAt: new Date().toISOString(),
-    updatedBy: params.updatedBy ?? 'Usuário Autorizado',
-  };
 
-  // Save in localStorage immediately
-  const cached = getCachedStudentPhotos();
-  cached[params.studentId] = record;
-  setCachedStudentPhotos(cached);
-
-  // Persist on server database
   const res = await fetch('/api/carometro/photos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -122,22 +108,38 @@ export async function saveStudentPhoto(params: {
     }),
   });
 
+  const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error('Erro ao persistir foto no servidor');
+    throw new Error(json?.message ?? 'Erro ao persistir foto no banco de dados');
   }
+
+  const record: StudentPhotoRecord = json.photo ?? {
+    studentId: params.studentId,
+    photoDataUrl,
+    updatedAt: new Date().toISOString(),
+    updatedBy: params.updatedBy ?? 'Usuário Autorizado',
+  };
+
+  const cached = getCachedStudentPhotos();
+  cached[params.studentId] = record;
+  setCachedStudentPhotos(cached);
 
   return record;
 }
 
 /**
- * Removes a student's photo from both the backend database and localStorage.
+ * Removes a student's photo from the backend database and updates local cache.
  */
 export async function deleteStudentPhoto(studentId: string): Promise<void> {
+  const res = await fetch(`/api/carometro/photos?studentId=${encodeURIComponent(studentId)}`, {
+    method: 'DELETE',
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(json?.message ?? 'Erro ao remover foto do banco de dados');
+  }
+
   const cached = getCachedStudentPhotos();
   delete cached[studentId];
   setCachedStudentPhotos(cached);
-
-  await fetch(`/api/carometro/photos?studentId=${encodeURIComponent(studentId)}`, {
-    method: 'DELETE',
-  });
 }
