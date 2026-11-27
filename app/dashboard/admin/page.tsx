@@ -88,37 +88,37 @@ export default function AdminDashboardPage() {
   const kpis = [
     {
       label: 'Total de Alunos',
-      value: stats.totalStudents.toLocaleString('pt-BR'),
+      value: Number(stats.totalStudents ?? 0).toLocaleString('pt-BR'),
       icon: Users,
       color: 'text-blue-600 bg-blue-50',
     },
     {
       label: 'Professores',
-      value: stats.totalTeachers.toLocaleString('pt-BR'),
+      value: Number(stats.totalTeachers ?? 0).toLocaleString('pt-BR'),
       icon: UserCheck,
       color: 'text-indigo-600 bg-indigo-50',
     },
     {
       label: 'Turmas Ativas',
-      value: stats.totalClasses.toLocaleString('pt-BR'),
+      value: Number(stats.totalClasses ?? 0).toLocaleString('pt-BR'),
       icon: School,
       color: 'text-violet-600 bg-violet-50',
     },
     {
       label: 'Moedas Emitidas',
-      value: `${stats.totalCoinsEmitted.toLocaleString('pt-BR')} JM$`,
+      value: `${Number(stats.totalCoinsEmitted ?? 0).toLocaleString('pt-BR')} JM$`,
       icon: Coins,
       color: 'text-emerald-600 bg-emerald-50',
     },
     {
       label: 'Moedas Resgatadas',
-      value: `${stats.totalCoinsRedeemed.toLocaleString('pt-BR')} JM$`,
+      value: `${Number(stats.totalCoinsRedeemed ?? 0).toLocaleString('pt-BR')} JM$`,
       icon: Gift,
       color: 'text-amber-600 bg-amber-50',
     },
     {
       label: 'Missões Cadastradas',
-      value: stats.totalMissions.toLocaleString('pt-BR'),
+      value: Number(stats.totalMissions ?? 0).toLocaleString('pt-BR'),
       icon: Flag,
       color: 'text-rose-600 bg-rose-50',
     },
@@ -133,7 +133,7 @@ export default function AdminDashboardPage() {
             Dashboard Institucional
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-1 leading-relaxed">
-            Indicadores reais consolidados diretamente do banco de dados Supabase.
+            Indicadores reais consolidados diretamente do banco de dados PostgreSQL (Prisma).
           </p>
         </div>
         <div className="flex flex-wrap gap-2 w-full sm:w-auto">

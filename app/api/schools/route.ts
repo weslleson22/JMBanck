@@ -1,11 +1,10 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import {
-  dbErrorResponse,
-  getServerDbContext,
-  insertWithSchemaFallback,
-} from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
+
+export const dynamic = 'force-dynamic';
 
 const createSchoolSchema = z.object({
   name: z.string().trim().min(2, 'Nome da escola é obrigatório'),
@@ -25,20 +24,19 @@ function normalizeSchool(row: any) {
     academic_year: row.academic_year ? String(row.academic_year) : '2026',
     director_name: row.director_name ?? undefined,
     status: row.status === 'inactive' ? 'inactive' : 'active',
-    created_at: row.created_at ?? new Date().toISOString(),
+    created_at:
+      row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : (row.created_at ?? new Date().toISOString()),
   };
 }
 
 export async function GET() {
   try {
-    const { db } = await getServerDbContext();
-    const { data, error } = await db
-      .from('schools')
-      .select('*')
-      .order('name', { ascending: true });
-
-    if (error) return dbErrorResponse(error, 'escolas (schools)');
-    return NextResponse.json((data ?? []).map(normalizeSchool));
+    const schools = await prisma.school.findMany({
+      orderBy: { name: 'asc' },
+    });
+    return NextResponse.json(schools.map(normalizeSchool));
   } catch (e: any) {
     return dbErrorResponse(e, 'escolas (schools)');
   }
@@ -46,9 +44,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_schools', 'manage_school']);
+      await authorize(['manage_schools', 'manage_school']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para cadastrar escolas' },
@@ -65,21 +62,18 @@ export async function POST(req: Request) {
       );
     }
 
-    const fullPayload: Record<string, any> = {
-      name: parsed.data.name,
-      ...(parsed.data.code ? { code: parsed.data.code } : {}),
-      ...(parsed.data.city ? { city: parsed.data.city } : {}),
-      academic_year: parsed.data.academic_year,
-      ...(parsed.data.director_name ? { director_name: parsed.data.director_name } : {}),
-      status: parsed.data.status,
-    };
-
-    const { data, error } = await insertWithSchemaFallback(db, 'schools', fullPayload, {
-      name: parsed.data.name,
+    const created = await prisma.school.create({
+      data: {
+        name: parsed.data.name,
+        code: parsed.data.code || null,
+        city: parsed.data.city || null,
+        academic_year: parsed.data.academic_year,
+        director_name: parsed.data.director_name || null,
+        status: parsed.data.status,
+      },
     });
 
-    if (error) return dbErrorResponse(error, 'criação de escola');
-    return NextResponse.json(normalizeSchool(data), { status: 201 });
+    return NextResponse.json(normalizeSchool(created), { status: 201 });
   } catch (e: any) {
     return dbErrorResponse(e, 'criação de escola');
   }

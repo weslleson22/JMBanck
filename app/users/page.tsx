@@ -467,19 +467,17 @@ export default function UsersManagementPage() {
                 return (
                   <div
                     key={u.id}
-                    className={`flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border p-3.5 sm:p-4 transition-colors ${
-                      u.status === 'blocked'
+                    className={`flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border p-3.5 sm:p-4 transition-colors ${u.status === 'blocked'
                         ? 'border-red-200/80 bg-red-50/30'
                         : 'border-slate-200/80 bg-slate-50/60 hover:border-blue-200 hover:bg-white'
-                    }`}
+                      }`}
                   >
                     <div className="flex items-start gap-3 min-w-0">
                       <div
-                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl font-heading font-bold text-xs mt-0.5 ${
-                          u.status === 'blocked'
+                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl font-heading font-bold text-xs mt-0.5 ${u.status === 'blocked'
                             ? 'bg-red-100 text-red-700'
                             : 'bg-blue-100 text-blue-700'
-                        }`}
+                          }`}
                       >
                         {initials}
                       </div>
@@ -697,10 +695,8 @@ export default function UsersManagementPage() {
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  A senha é gerenciada diretamente pelo Supabase Auth (requer{' '}
-                  <code className="font-mono bg-white px-1 rounded">SUPABASE_SERVICE_ROLE_KEY</code>{' '}
-                  configurada no servidor) e permite login imediato em{' '}
-                  <code className="font-mono bg-white px-1 rounded">/login</code>.
+                  A senha é salva com hash criptográfico (scrypt + salt) no PostgreSQL via Prisma e
+                  permite login imediato em <code className="font-mono bg-white px-1 rounded">/login</code>.
                 </p>
               </div>
 

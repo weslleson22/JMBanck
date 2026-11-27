@@ -3,7 +3,7 @@
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@/lib/zod-resolver';
-import { ROLE_LABELS, setStoredDemoUser } from '@/lib/client';
+import { canAccessRoute, ROLE_LABELS, setStoredDemoUser } from '@/lib/client';
 import type { Role } from '@/lib/role';
 import type { DatabaseHealthReport } from '@/lib/db-health';
 import { Button } from '@/components/ui/button';
@@ -72,8 +72,8 @@ export default function LoginForm() {
         environment: 'unknown',
         isProduction: true,
         latencyMs: 0,
+        databaseHost: null,
         supabaseHost: null,
-        usingServiceRole: false,
         envVars: [],
         warnings: [],
         tables: [],
@@ -99,7 +99,7 @@ export default function LoginForm() {
     if (dbBlocked) {
       toast.error(
         health?.errorMessage ??
-          'Login bloqueado: não há conexão válida com o banco de dados.'
+        'Login bloqueado: não há conexão válida com o banco de dados.'
       );
       return;
     }
@@ -141,7 +141,16 @@ export default function LoginForm() {
           roleLabel: json.user.roleLabel,
         });
         toast.success(`Bem-vindo(a), ${json.user.name}!`);
-        router.push(json.user.dashboardPath ?? '/dashboard');
+        const params = new URLSearchParams(window.location.search);
+        const rawNext = params.get('next');
+        const safeNext =
+          rawNext &&
+            rawNext.startsWith('/') &&
+            !rawNext.startsWith('//') &&
+            canAccessRoute(json.user.role, rawNext)
+            ? rawNext
+            : json.user.dashboardPath ?? '/dashboard';
+        router.push(safeNext);
         return;
       }
 
@@ -217,13 +226,12 @@ export default function LoginForm() {
                         {envItem.name}
                       </span>{' '}
                       <span
-                        className={`text-[11px] font-semibold ${
-                          envItem.valid
+                        className={`text-[11px] font-semibold ${envItem.valid
                             ? 'text-emerald-700'
                             : envItem.required
                               ? 'text-red-700'
                               : 'text-amber-700'
-                        }`}
+                          }`}
                       >
                         {envItem.valid
                           ? '— OK'
@@ -249,7 +257,7 @@ export default function LoginForm() {
           {health.missingTables.length > 0 && (
             <div className="rounded-lg border border-red-200 bg-white/90 p-2.5 text-xs">
               <p className="font-semibold text-red-800 mb-1">
-                Tabelas não encontradas no Supabase:
+                Tabelas não encontradas no PostgreSQL:
               </p>
               <div className="flex flex-wrap gap-1">
                 {health.missingTables.map((t) => (
@@ -290,9 +298,9 @@ export default function LoginForm() {
                 <p className="text-xs font-semibold text-emerald-900 truncate">
                   Banco de dados conectado ({health.latencyMs}ms)
                 </p>
-                {health.supabaseHost && (
+                {(health.databaseHost || health.supabaseHost) && (
                   <p className="font-mono text-[11px] text-emerald-700/90 truncate">
-                    {health.supabaseHost} · {health.environment}
+                    {health.databaseHost || health.supabaseHost} · {health.environment}
                   </p>
                 )}
               </div>
@@ -325,9 +333,8 @@ export default function LoginForm() {
                 <div key={envItem.name} className="flex items-center justify-between gap-2 text-[11px]">
                   <span className="font-mono text-slate-700 truncate">{envItem.name}</span>
                   <span
-                    className={`font-semibold shrink-0 ${
-                      envItem.valid ? 'text-emerald-700' : 'text-amber-700'
-                    }`}
+                    className={`font-semibold shrink-0 ${envItem.valid ? 'text-emerald-700' : 'text-amber-700'
+                      }`}
                   >
                     {envItem.valid ? '✓ OK' : '⚠ Ausente'}
                   </span>
@@ -448,13 +455,12 @@ export default function LoginForm() {
           ) : (
             <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-[11px] text-amber-900 space-y-1.5 leading-relaxed">
               <p className="font-semibold">
-                Nenhum usuário encontrado na leitura inicial de <code className="font-mono">public.users</code>.
+                Nenhum usuário encontrado na tabela <code className="font-mono">users</code>.
               </p>
               <p>
-                Use uma conta já existente no <strong>Supabase Auth</strong> (Authentication → Users)
-                ou configure <code className="font-mono">SUPABASE_SERVICE_ROLE_KEY</code> no{' '}
-                <code className="font-mono">.env.local</code> e execute{' '}
-                <code className="font-mono">node scripts/create_test_accounts.mjs</code>.
+                Execute <code className="font-mono">npm run db:seed</code> (ou{' '}
+                <code className="font-mono">node prisma/seed.mjs</code>) para criar os 7 usuários
+                iniciais no PostgreSQL via Prisma.
               </p>
             </div>
           )}

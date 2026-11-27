@@ -108,7 +108,7 @@ export default function TreasuryDashboardPage() {
                     Itens no Catálogo
                   </p>
                   <p className="font-numeric text-lg sm:text-2xl font-extrabold tracking-tight text-slate-900 mt-0.5 sm:mt-1">
-                    {stats.totalRewards.toLocaleString('pt-BR')}
+                    {Number(stats.totalRewards ?? 0).toLocaleString('pt-BR')}
                   </p>
                 </div>
                 <div className="flex h-9 w-9 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-lg sm:rounded-xl bg-blue-50 text-blue-600">
@@ -124,7 +124,7 @@ export default function TreasuryDashboardPage() {
                     Unidades em Estoque
                   </p>
                   <p className="font-numeric text-lg sm:text-2xl font-extrabold tracking-tight text-slate-900 mt-0.5 sm:mt-1">
-                    {stats.totalStock.toLocaleString('pt-BR')}
+                    {Number(stats.totalStock ?? 0).toLocaleString('pt-BR')}
                   </p>
                 </div>
                 <div className="flex h-9 w-9 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-lg sm:rounded-xl bg-indigo-50 text-indigo-600">
@@ -140,7 +140,7 @@ export default function TreasuryDashboardPage() {
                     Sem Estoque
                   </p>
                   <p className="font-numeric text-lg sm:text-2xl font-extrabold tracking-tight text-amber-600 mt-0.5 sm:mt-1">
-                    {stats.outOfStockCount.toLocaleString('pt-BR')}
+                    {Number(stats.outOfStockCount ?? 0).toLocaleString('pt-BR')}
                   </p>
                 </div>
                 <div className="flex h-9 w-9 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-lg sm:rounded-xl bg-amber-50 text-amber-500">
@@ -156,7 +156,7 @@ export default function TreasuryDashboardPage() {
                     Moedas Resgatadas
                   </p>
                   <p className="font-numeric text-lg sm:text-2xl font-extrabold tracking-tight text-emerald-600 mt-0.5 sm:mt-1">
-                    {stats.totalCoinsRedeemed.toLocaleString('pt-BR')} JM$
+                    {Number(stats.totalCoinsRedeemed ?? 0).toLocaleString('pt-BR')} JM$
                   </p>
                 </div>
                 <div className="flex h-9 w-9 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-lg sm:rounded-xl bg-emerald-50 text-emerald-600">

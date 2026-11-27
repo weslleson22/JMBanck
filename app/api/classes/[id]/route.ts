@@ -1,14 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import {
-  dbErrorResponse,
-  getServerDbContext,
-  updateWithSchemaFallback,
-} from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 const updateClassSchema = z.object({
-  name: z.string().trim().min(2, 'Nome da turma é obrigatório').optional(),
+  name: z.string().trim().min(2).optional(),
   grade_level_id: z.string().trim().min(1).optional(),
   school_id: z.string().trim().min(1).optional(),
   shift: z.enum(['Matutino', 'Vespertino', 'Noturno', 'Integral']).optional(),
@@ -29,7 +26,10 @@ function normalizeClass(row: any) {
     room: row.room ?? undefined,
     capacity: row.capacity != null ? Number(row.capacity) : undefined,
     status: row.status === 'inactive' ? 'inactive' : 'active',
-    created_at: row.created_at ?? new Date().toISOString(),
+    created_at:
+      row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : (row.created_at ?? new Date().toISOString()),
   };
 }
 
@@ -39,13 +39,13 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const { db } = await getServerDbContext();
-    const { data, error } = await db.from('classes').select('*').eq('id', id).maybeSingle();
-    if (error) return dbErrorResponse(error, 'turma');
-    if (!data) return NextResponse.json({ message: 'Turma não encontrada' }, { status: 404 });
-    return NextResponse.json(normalizeClass(data));
+    const found = await prisma.classRoom.findUnique({ where: { id } });
+    if (!found) {
+      return NextResponse.json({ message: 'Turma não encontrada' }, { status: 404 });
+    }
+    return NextResponse.json(normalizeClass(found));
   } catch (e: any) {
-    return dbErrorResponse(e, 'turma');
+    return dbErrorResponse(e, 'consulta de turma');
   }
 }
 
@@ -54,10 +54,8 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_classes']);
+      await authorize(['manage_classes']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para editar turmas' },
@@ -65,6 +63,7 @@ export async function PUT(
       );
     }
 
+    const { id } = await params;
     const body = await req.json();
     const parsed = updateClassSchema.safeParse(body);
     if (!parsed.success) {
@@ -74,34 +73,25 @@ export async function PUT(
       );
     }
 
-    const corePayload: Record<string, any> = {};
-    if (parsed.data.name !== undefined) corePayload.name = parsed.data.name;
-    if (parsed.data.grade_level_id !== undefined)
-      corePayload.grade_level_id = parsed.data.grade_level_id;
-    if (parsed.data.school_id !== undefined) corePayload.school_id = parsed.data.school_id;
+    const updated = await prisma.classRoom.update({
+      where: { id },
+      data: {
+        ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.grade_level_id !== undefined
+          ? { grade_level_id: parsed.data.grade_level_id }
+          : {}),
+        ...(parsed.data.school_id !== undefined ? { school_id: parsed.data.school_id } : {}),
+        ...(parsed.data.shift !== undefined ? { shift: parsed.data.shift } : {}),
+        ...(parsed.data.academic_year !== undefined
+          ? { academic_year: parsed.data.academic_year }
+          : {}),
+        ...(parsed.data.room !== undefined ? { room: parsed.data.room || null } : {}),
+        ...(parsed.data.capacity !== undefined ? { capacity: parsed.data.capacity } : {}),
+        ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
+      },
+    });
 
-    const fullPayload: Record<string, any> = {
-      ...corePayload,
-      ...(parsed.data.shift !== undefined ? { shift: parsed.data.shift } : {}),
-      ...(parsed.data.academic_year !== undefined
-        ? { academic_year: parsed.data.academic_year }
-        : {}),
-      ...(parsed.data.room !== undefined ? { room: parsed.data.room || null } : {}),
-      ...(parsed.data.capacity !== undefined ? { capacity: parsed.data.capacity } : {}),
-      ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
-    };
-
-    const { data, error } = await updateWithSchemaFallback(
-      db,
-      'classes',
-      id,
-      fullPayload,
-      corePayload
-    );
-
-    if (error) return dbErrorResponse(error, 'atualização de turma');
-    if (!data) return NextResponse.json({ message: 'Turma não encontrada' }, { status: 404 });
-    return NextResponse.json(normalizeClass(data));
+    return NextResponse.json(normalizeClass(updated));
   } catch (e: any) {
     return dbErrorResponse(e, 'atualização de turma');
   }
@@ -114,10 +104,8 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_classes']);
+      await authorize(['manage_classes']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para excluir turmas' },
@@ -125,8 +113,8 @@ export async function DELETE(
       );
     }
 
-    const { error } = await db.from('classes').delete().eq('id', id);
-    if (error) return dbErrorResponse(error, 'exclusão de turma');
+    const { id } = await params;
+    await prisma.classRoom.delete({ where: { id } });
     return NextResponse.json({ ok: true, id });
   } catch (e: any) {
     return dbErrorResponse(e, 'exclusão de turma');

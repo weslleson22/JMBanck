@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import {
-  dbErrorResponse,
-  getServerDbContext,
-  insertWithSchemaFallback,
-} from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,20 +17,10 @@ const createMissionSchema = z.object({
 
 export async function GET() {
   try {
-    const { db } = await getServerDbContext();
-    const { data, error } = await db
-      .from('missions')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      // Retry without created_at order in case schema doesn't have created_at
-      const retry = await db.from('missions').select('*');
-      if (retry.error) return dbErrorResponse(retry.error, 'missões (missions)');
-      return NextResponse.json(retry.data ?? []);
-    }
-
-    return NextResponse.json(data ?? []);
+    const missions = await prisma.mission.findMany({
+      orderBy: { created_at: 'desc' },
+    });
+    return NextResponse.json(missions);
   } catch (e: any) {
     return dbErrorResponse(e, 'missões (missions)');
   }
@@ -41,9 +28,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, [
+      await authorize([
         'create_activities',
         'create_pedagogical_challenges',
         'create_campaigns',
@@ -65,34 +51,24 @@ export async function POST(req: Request) {
       );
     }
 
-    let schoolId = parsed.data.school_id;
+    let schoolId = parsed.data.school_id || null;
     if (!schoolId) {
-      const { data: firstSchool } = await db.from('schools').select('id').limit(1).maybeSingle();
-      schoolId = firstSchool?.id;
+      const firstSchool = await prisma.school.findFirst({ select: { id: true } });
+      schoolId = firstSchool?.id ?? null;
     }
 
-    const corePayload: Record<string, any> = {
-      ...(schoolId ? { school_id: schoolId } : {}),
-      title: parsed.data.title,
-      reward_amount: parsed.data.reward_amount,
-      status: parsed.data.status,
-    };
+    const created = await prisma.mission.create({
+      data: {
+        school_id: schoolId,
+        title: parsed.data.title,
+        description: parsed.data.description || null,
+        subject: parsed.data.subject || 'Geral',
+        reward_amount: parsed.data.reward_amount,
+        status: parsed.data.status,
+      },
+    });
 
-    const fullPayload: Record<string, any> = {
-      ...corePayload,
-      ...(parsed.data.description ? { description: parsed.data.description } : {}),
-      ...(parsed.data.subject ? { subject: parsed.data.subject } : {}),
-    };
-
-    const { data, error } = await insertWithSchemaFallback(
-      db,
-      'missions',
-      fullPayload,
-      corePayload
-    );
-
-    if (error) return dbErrorResponse(error, 'criação de missão');
-    return NextResponse.json(data, { status: 201 });
+    return NextResponse.json(created, { status: 201 });
   } catch (e: any) {
     return dbErrorResponse(e, 'criação de missão');
   }

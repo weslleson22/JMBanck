@@ -1,26 +1,52 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import {
-  dbErrorResponse,
-  getServerDbContext,
-  insertWithSchemaFallback,
-  updateWithSchemaFallback,
-} from '@/lib/supabase-data';
+import { hashPassword } from '@/lib/auth-session';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 const updateStudentSchema = z.object({
-  name: z.string().trim().min(2, 'Informe o nome completo do aluno').optional(),
+  name: z.string().trim().min(2).optional(),
   email: z.string().trim().email('Informe um e-mail de acesso válido').or(z.literal('')).optional(),
-  enrollment_number: z.string().trim().min(1, 'Informe o número da matrícula').optional(),
-  class_id: z.string().trim().min(1, 'Selecione a turma').optional(),
+  enrollment_number: z.string().trim().min(1).optional(),
+  class_id: z.string().trim().min(1).optional(),
   guardian_name: z.string().trim().optional(),
   guardian_contact: z.string().trim().optional(),
   birth_date: z.string().trim().optional(),
   status: z.enum(['active', 'transferred', 'inactive']).optional(),
   lgpd_consent: z.boolean().optional(),
+  photo_path: z.string().nullable().optional(),
   password: z.string().optional(),
   access_status: z.enum(['active', 'blocked']).optional(),
 });
+
+function formatStudent(s: any) {
+  const u = s.user;
+  const hasAccess = Boolean(u?.password_hash);
+  const isBlocked = u?.status === 'blocked' || u?.status === 'inactive';
+
+  return {
+    id: s.id,
+    user_id: s.user_id ?? undefined,
+    name: s.name ?? u?.name ?? `Aluno #${s.enrollment_number}`,
+    email: u?.email ?? s.email ?? undefined,
+    enrollment_number: s.enrollment_number,
+    class_id: s.class_id ?? '',
+    class_name: s.classRoom?.name ?? s.class_id ?? 'Sem turma',
+    guardian_name: s.guardian_name ?? undefined,
+    guardian_contact: s.guardian_contact ?? undefined,
+    birth_date: s.birth_date ?? undefined,
+    status: s.status === 'transferred' || s.status === 'inactive' ? s.status : 'active',
+    photo_path: s.photo_path ?? null,
+    lgpd_consent: s.lgpd_consent ?? true,
+    has_access: hasAccess,
+    access_status: !hasAccess ? 'none' : isBlocked ? 'blocked' : 'active',
+    created_at:
+      s.created_at instanceof Date
+        ? s.created_at.toISOString()
+        : (s.created_at ?? new Date().toISOString()),
+  };
+}
 
 export async function GET(
   _req: Request,
@@ -28,49 +54,19 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const { db } = await getServerDbContext();
-    const { data: student, error } = await db
-      .from('students')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
-
-    if (error) return dbErrorResponse(error, 'aluno');
-    if (!student) return NextResponse.json({ message: 'Aluno não encontrado' }, { status: 404 });
-
-    const [{ data: linkedUser }, { data: matchedClass }] = await Promise.all([
-      student.user_id
-        ? db.from('users').select('*').eq('id', student.user_id).maybeSingle()
-        : Promise.resolve({ data: null }),
-      student.class_id
-        ? db.from('classes').select('id, name').eq('id', student.class_id).maybeSingle()
-        : Promise.resolve({ data: null }),
-    ]);
-
-    return NextResponse.json({
-      id: student.id,
-      user_id: student.user_id ?? undefined,
-      name: student.name ?? linkedUser?.name ?? `Aluno #${student.enrollment_number}`,
-      email: linkedUser?.email ?? student.email ?? undefined,
-      enrollment_number: student.enrollment_number ?? '',
-      class_id: student.class_id ?? '',
-      class_name: matchedClass?.name ?? student.class_id,
-      guardian_name: student.guardian_name ?? undefined,
-      guardian_contact: student.guardian_contact ?? undefined,
-      birth_date: student.birth_date ?? undefined,
-      status: student.status ?? 'active',
-      photo_path: student.photo_path ?? null,
-      lgpd_consent: student.lgpd_consent ?? true,
-      has_access: Boolean(linkedUser?.auth_uid),
-      access_status: !linkedUser?.auth_uid
-        ? 'none'
-        : linkedUser?.status === 'blocked'
-          ? 'blocked'
-          : 'active',
-      created_at: student.created_at ?? new Date().toISOString(),
+    const found = await prisma.student.findUnique({
+      where: { id },
+      include: {
+        user: true,
+        classRoom: { select: { id: true, name: true } },
+      },
     });
+    if (!found) {
+      return NextResponse.json({ message: 'Aluno não encontrado' }, { status: 404 });
+    }
+    return NextResponse.json(formatStudent(found));
   } catch (e: any) {
-    return dbErrorResponse(e, 'aluno');
+    return dbErrorResponse(e, 'consulta de aluno');
   }
 }
 
@@ -79,15 +75,22 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
-    const { authClient, adminClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_students', 'transfer_student']);
+      await authorize(['manage_students', 'transfer_student', 'enroll_student']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para editar alunos' },
         { status: 403 }
       );
+    }
+
+    const { id } = await params;
+    const current = await prisma.student.findUnique({
+      where: { id },
+      include: { user: true },
+    });
+    if (!current) {
+      return NextResponse.json({ message: 'Aluno não encontrado' }, { status: 404 });
     }
 
     const body = await req.json();
@@ -99,197 +102,101 @@ export async function PUT(
       );
     }
 
-    const { data: currentStudent, error: findErr } = await db
-      .from('students')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
-
-    if (findErr) return dbErrorResponse(findErr, 'aluno');
-    if (!currentStudent) {
-      return NextResponse.json({ message: 'Aluno não encontrado' }, { status: 404 });
-    }
-
-    let linkedUser: any = null;
-    if (currentStudent.user_id) {
-      const { data: u } = await db
-        .from('users')
-        .select('*')
-        .eq('id', currentStudent.user_id)
-        .maybeSingle();
-      linkedUser = u;
-    }
-
-    const nextName =
-      parsed.data.name ??
-      currentStudent.name ??
-      linkedUser?.name ??
-      `Aluno #${currentStudent.enrollment_number}`;
+    const nextName = parsed.data.name ?? current.name;
     const nextEmail =
       parsed.data.email !== undefined
         ? parsed.data.email.trim().toLowerCase()
-        : linkedUser?.email ?? currentStudent.email ?? '';
+        : (current.user?.email ?? current.email ?? '');
     const trimmedPassword = (parsed.data.password ?? '').trim();
-    const nextAccessStatus = parsed.data.access_status ?? linkedUser?.status ?? 'active';
+    const nextAccessStatus =
+      parsed.data.access_status ??
+      (current.user?.status === 'blocked' ? 'blocked' : 'active');
 
     if (trimmedPassword && trimmedPassword.length < 6) {
       return NextResponse.json(
-        { message: 'A nova senha deve ter pelo menos 6 caracteres.' },
+        { message: 'A senha de acesso deve ter pelo menos 6 caracteres.' },
+        { status: 400 }
+      );
+    }
+    if (trimmedPassword && !nextEmail) {
+      return NextResponse.json(
+        { message: 'Informe um e-mail de login para criar ou alterar a senha do aluno.' },
         { status: 400 }
       );
     }
 
-    let authUid: string | null = linkedUser?.auth_uid ?? null;
+    const updated = await prisma.$transaction(async (tx) => {
+      let userId = current.user_id;
 
-    if (trimmedPassword || parsed.data.access_status !== undefined || (nextEmail && authUid)) {
-      if (trimmedPassword && !adminClient) {
-        return NextResponse.json(
-          {
-            message:
-              'A variável SUPABASE_SERVICE_ROLE_KEY não está configurada no servidor. Configure-a para criar ou alterar senhas no Supabase Auth.',
-            code: 'MISSING_SERVICE_ROLE_KEY',
-          },
-          { status: 400 }
-        );
-      }
-
-      if (adminClient) {
-        if (authUid) {
-          const { error: authUpdErr } = await adminClient.auth.admin.updateUserById(authUid, {
+      if (userId) {
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            name: nextName,
             ...(nextEmail ? { email: nextEmail } : {}),
-            ...(trimmedPassword ? { password: trimmedPassword } : {}),
-            ban_duration: nextAccessStatus === 'blocked' ? '876000h' : 'none',
-            user_metadata: { name: nextName, role: 'student' },
+            status: nextAccessStatus,
+            ...(trimmedPassword ? { password_hash: hashPassword(trimmedPassword) } : {}),
+          },
+        });
+      } else if (nextEmail) {
+        const existingUser = await tx.user.findUnique({ where: { email: nextEmail } });
+        if (existingUser) {
+          const u = await tx.user.update({
+            where: { id: existingUser.id },
+            data: {
+              name: nextName,
+              status: nextAccessStatus,
+              ...(trimmedPassword ? { password_hash: hashPassword(trimmedPassword) } : {}),
+            },
           });
-          if (authUpdErr) {
-            return NextResponse.json({ message: authUpdErr.message }, { status: 400 });
-          }
-        } else if (trimmedPassword && nextEmail) {
-          const { data: createdAuth, error: authCreateErr } =
-            await adminClient.auth.admin.createUser({
+          userId = u.id;
+        } else {
+          const u = await tx.user.create({
+            data: {
               email: nextEmail,
-              password: trimmedPassword,
-              email_confirm: true,
-              user_metadata: { name: nextName, role: 'student' },
-            });
-          if (authCreateErr || !createdAuth?.user) {
-            return NextResponse.json(
-              { message: authCreateErr?.message ?? 'Erro ao criar login do aluno.' },
-              { status: 400 }
-            );
-          }
-          authUid = createdAuth.user.id;
-          if (nextAccessStatus === 'blocked') {
-            await adminClient.auth.admin.updateUserById(authUid, { ban_duration: '876000h' });
-          }
+              name: nextName,
+              role: 'student',
+              status: nextAccessStatus,
+              password_hash: trimmedPassword ? hashPassword(trimmedPassword) : null,
+            },
+          });
+          userId = u.id;
         }
       }
-    }
 
-    let nextUserId: string | undefined = linkedUser?.id ?? currentStudent.user_id;
-    if (linkedUser) {
-      const userCore: Record<string, any> = {
-        name: nextName,
-        ...(nextEmail ? { email: nextEmail } : {}),
-        ...(authUid ? { auth_uid: authUid } : {}),
-      };
-      await updateWithSchemaFallback(
-        db,
-        'users',
-        linkedUser.id,
-        { ...userCore, status: nextAccessStatus },
-        userCore
-      );
-    } else if (authUid && nextEmail) {
-      const { data: createdUser } = await insertWithSchemaFallback(
-        db,
-        'users',
-        {
-          auth_uid: authUid,
-          email: nextEmail,
+      return await tx.student.update({
+        where: { id },
+        data: {
+          user_id: userId,
           name: nextName,
-          role: 'student',
-          status: nextAccessStatus,
+          ...(parsed.data.email !== undefined ? { email: nextEmail || null } : {}),
+          ...(parsed.data.enrollment_number !== undefined
+            ? { enrollment_number: parsed.data.enrollment_number }
+            : {}),
+          ...(parsed.data.class_id !== undefined ? { class_id: parsed.data.class_id } : {}),
+          ...(parsed.data.guardian_name !== undefined
+            ? { guardian_name: parsed.data.guardian_name || null }
+            : {}),
+          ...(parsed.data.guardian_contact !== undefined
+            ? { guardian_contact: parsed.data.guardian_contact || null }
+            : {}),
+          ...(parsed.data.birth_date !== undefined
+            ? { birth_date: parsed.data.birth_date || null }
+            : {}),
+          ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
+          ...(parsed.data.lgpd_consent !== undefined
+            ? { lgpd_consent: parsed.data.lgpd_consent }
+            : {}),
+          ...(parsed.data.photo_path !== undefined ? { photo_path: parsed.data.photo_path } : {}),
         },
-        {
-          auth_uid: authUid,
-          email: nextEmail,
-          name: nextName,
-          role: 'student',
-        }
-      );
-      if (createdUser?.id) nextUserId = createdUser.id;
-    }
-
-    const nextClassId = parsed.data.class_id ?? currentStudent.class_id;
-    const studentCore: Record<string, any> = {
-      ...(nextUserId ? { user_id: nextUserId } : {}),
-      ...(parsed.data.enrollment_number !== undefined
-        ? { enrollment_number: parsed.data.enrollment_number }
-        : {}),
-      ...(nextClassId ? { class_id: nextClassId } : {}),
-    };
-
-    const studentFull: Record<string, any> = {
-      ...studentCore,
-      name: nextName,
-      ...(nextEmail ? { email: nextEmail } : {}),
-      ...(parsed.data.guardian_name !== undefined
-        ? { guardian_name: parsed.data.guardian_name || null }
-        : {}),
-      ...(parsed.data.guardian_contact !== undefined
-        ? { guardian_contact: parsed.data.guardian_contact || null }
-        : {}),
-      ...(parsed.data.birth_date !== undefined
-        ? { birth_date: parsed.data.birth_date || null }
-        : {}),
-      ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
-      ...(parsed.data.lgpd_consent !== undefined ? { lgpd_consent: parsed.data.lgpd_consent } : {}),
-    };
-
-    const { data: updatedStudent, error: updErr } = await updateWithSchemaFallback(
-      db,
-      'students',
-      id,
-      studentFull,
-      studentCore
-    );
-
-    if (updErr) return dbErrorResponse(updErr, 'atualização de aluno');
-
-    const { data: matchedClass } = nextClassId
-      ? await db.from('classes').select('id, name').eq('id', nextClassId).maybeSingle()
-      : { data: null };
-
-    return NextResponse.json({
-      id: updatedStudent?.id ?? id,
-      user_id: nextUserId,
-      name: updatedStudent?.name ?? nextName,
-      email: nextEmail || undefined,
-      enrollment_number:
-        updatedStudent?.enrollment_number ??
-        parsed.data.enrollment_number ??
-        currentStudent.enrollment_number,
-      class_id: nextClassId,
-      class_name: matchedClass?.name ?? nextClassId,
-      guardian_name:
-        updatedStudent?.guardian_name ??
-        parsed.data.guardian_name ??
-        currentStudent.guardian_name,
-      guardian_contact:
-        updatedStudent?.guardian_contact ??
-        parsed.data.guardian_contact ??
-        currentStudent.guardian_contact,
-      birth_date:
-        updatedStudent?.birth_date ?? parsed.data.birth_date ?? currentStudent.birth_date,
-      status: updatedStudent?.status ?? parsed.data.status ?? currentStudent.status ?? 'active',
-      photo_path: updatedStudent?.photo_path ?? currentStudent.photo_path ?? null,
-      lgpd_consent:
-        updatedStudent?.lgpd_consent ?? parsed.data.lgpd_consent ?? currentStudent.lgpd_consent ?? true,
-      has_access: Boolean(authUid),
-      access_status: !authUid ? 'none' : nextAccessStatus === 'blocked' ? 'blocked' : 'active',
-      created_at: currentStudent.created_at ?? new Date().toISOString(),
+        include: {
+          user: true,
+          classRoom: { select: { id: true, name: true } },
+        },
+      });
     });
+
+    return NextResponse.json(formatStudent(updated));
   } catch (e: any) {
     return dbErrorResponse(e, 'atualização de aluno');
   }
@@ -302,10 +209,8 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
-    const { authClient, adminClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_students']);
+      await authorize(['manage_students']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para excluir alunos' },
@@ -313,18 +218,8 @@ export async function DELETE(
       );
     }
 
-    const { data: student } = await db.from('students').select('*').eq('id', id).maybeSingle();
-    const { error } = await db.from('students').delete().eq('id', id);
-    if (error) return dbErrorResponse(error, 'exclusão de aluno');
-
-    if (student?.user_id) {
-      const { data: u } = await db.from('users').select('*').eq('id', student.user_id).maybeSingle();
-      if (u?.auth_uid && adminClient) {
-        await adminClient.auth.admin.deleteUser(u.auth_uid);
-      }
-      await db.from('users').delete().eq('id', student.user_id);
-    }
-
+    const { id } = await params;
+    await prisma.student.delete({ where: { id } });
     return NextResponse.json({ ok: true, id });
   } catch (e: any) {
     return dbErrorResponse(e, 'exclusão de aluno');

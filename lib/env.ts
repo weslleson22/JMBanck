@@ -10,10 +10,9 @@ export interface EnvValidationResult {
   ok: boolean;
   isProduction: boolean;
   environment: string;
-  supabaseUrl: string | null;
-  supabasePublicKey: string | null;
-  supabaseServiceRoleKey: string | null;
-  supabaseHost: string | null;
+  databaseUrl: string | null;
+  databaseHost: string | null;
+  authSecretConfigured: boolean;
   checks: EnvVarCheck[];
   missingRequired: string[];
   warnings: string[];
@@ -23,10 +22,9 @@ function isPlaceholderValue(value: string): boolean {
   const v = value.trim().toLowerCase();
   if (!v) return true;
   return (
-    v.includes('<your') ||
-    v.includes('your-project') ||
-    v.includes('your-anon-key') ||
-    v.includes('your-service-role') ||
+    v.includes('<user>') ||
+    v.includes('<password>') ||
+    v.includes('<host>') ||
     v.includes('placeholder') ||
     v === 'changeme'
   );
@@ -43,154 +41,98 @@ export function isProductionDeploy(): boolean {
   );
 }
 
-export function getSupabaseUrl(): string | null {
-  const raw = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+export function getDatabaseUrl(): string | null {
+  const raw = process.env.DATABASE_URL?.trim();
   return raw ? raw : null;
 }
 
-export function getSupabasePublicKey(): string | null {
-  const raw = (
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  )?.trim();
+export function getAuthSecretEnv(): string | null {
+  const raw = process.env.AUTH_SECRET?.trim();
   return raw ? raw : null;
 }
 
-export function getSupabaseServiceRoleKey(): string | null {
-  const raw = (
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SECRET_KEY
-  )?.trim();
-  return raw ? raw : null;
-}
-
-export function validateSupabaseEnv(): EnvValidationResult {
+export function validateDatabaseEnv(): EnvValidationResult {
   const isProduction = isProductionDeploy();
   const environment = process.env.VERCEL_ENV || process.env.NODE_ENV || 'development';
 
-  const url = getSupabaseUrl();
-  const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim() || null;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || null;
-  const publicKey = publishableKey || anonKey;
-  const serviceKey = getSupabaseServiceRoleKey();
+  const databaseUrl = getDatabaseUrl();
+  const authSecret = getAuthSecretEnv();
 
   const checks: EnvVarCheck[] = [];
   const missingRequired: string[] = [];
   const warnings: string[] = [];
+  let databaseHost: string | null = null;
 
-  // 1. NEXT_PUBLIC_SUPABASE_URL
-  let supabaseHost: string | null = null;
-  if (!url) {
+  // 1. DATABASE_URL (obrigatória para Prisma PostgreSQL)
+  if (!databaseUrl) {
     checks.push({
-      name: 'NEXT_PUBLIC_SUPABASE_URL',
+      name: 'DATABASE_URL',
       required: true,
       configured: false,
       valid: false,
-      issue: 'Variável ausente. Defina a URL do projeto Supabase (ex.: https://xxxx.supabase.co).',
+      issue:
+        'Variável ausente. Configure a string de conexão PostgreSQL (postgres://...) no .env ou no painel de deploy.',
     });
-    missingRequired.push('NEXT_PUBLIC_SUPABASE_URL');
-  } else if (isPlaceholderValue(url)) {
+    missingRequired.push('DATABASE_URL');
+  } else if (isPlaceholderValue(databaseUrl)) {
     checks.push({
-      name: 'NEXT_PUBLIC_SUPABASE_URL',
+      name: 'DATABASE_URL',
       required: true,
       configured: true,
       valid: false,
-      issue: 'Contém valor de exemplo/placeholder em vez da URL real do Supabase.',
+      issue: 'Contém valor de exemplo/placeholder em vez da URL real do PostgreSQL.',
     });
-    missingRequired.push('NEXT_PUBLIC_SUPABASE_URL');
+    missingRequired.push('DATABASE_URL');
   } else {
     try {
-      const parsed = new URL(url);
-      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      const parsed = new URL(databaseUrl);
+      if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
         throw new Error('Protocolo inválido');
       }
-      supabaseHost = parsed.host;
+      databaseHost = parsed.host;
       checks.push({
-        name: 'NEXT_PUBLIC_SUPABASE_URL',
+        name: 'DATABASE_URL',
         required: true,
         configured: true,
         valid: true,
       });
     } catch {
       checks.push({
-        name: 'NEXT_PUBLIC_SUPABASE_URL',
+        name: 'DATABASE_URL',
         required: true,
         configured: true,
         valid: false,
-        issue: 'Formato de URL inválido. Deve iniciar com https://',
+        issue: 'Formato inválido. Deve iniciar com postgres:// ou postgresql://.',
       });
-      missingRequired.push('NEXT_PUBLIC_SUPABASE_URL');
+      missingRequired.push('DATABASE_URL');
     }
   }
 
-  // 2. NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY
-  const publicKeyVarName = publishableKey
-    ? 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'
-    : anonKey
-      ? 'NEXT_PUBLIC_SUPABASE_ANON_KEY'
-      : 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (ou NEXT_PUBLIC_SUPABASE_ANON_KEY)';
-
-  if (!publicKey) {
+  // 2. AUTH_SECRET (recomendada para assinatura de sessão)
+  if (!authSecret) {
     checks.push({
-      name: publicKeyVarName,
-      required: true,
-      configured: false,
-      valid: false,
-      issue:
-        'Chave pública do Supabase ausente. Configure NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ou NEXT_PUBLIC_SUPABASE_ANON_KEY.',
-    });
-    missingRequired.push('NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY');
-  } else if (isPlaceholderValue(publicKey) || publicKey.length < 20) {
-    checks.push({
-      name: publicKeyVarName,
-      required: true,
-      configured: true,
-      valid: false,
-      issue: 'Chave pública do Supabase inválida ou incompleta.',
-    });
-    missingRequired.push(publicKeyVarName);
-  } else {
-    checks.push({
-      name: publicKeyVarName,
-      required: true,
-      configured: true,
-      valid: true,
-    });
-  }
-
-  // 3. SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY (server-side admin operations)
-  const serviceKeyVarName = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
-    ? 'SUPABASE_SERVICE_ROLE_KEY'
-    : process.env.SUPABASE_SECRET_KEY?.trim()
-      ? 'SUPABASE_SECRET_KEY'
-      : 'SUPABASE_SERVICE_ROLE_KEY (ou SUPABASE_SECRET_KEY)';
-
-  if (!serviceKey) {
-    checks.push({
-      name: serviceKeyVarName,
+      name: 'AUTH_SECRET',
       required: false,
       configured: false,
       valid: false,
       issue:
-        'Não configurada no servidor. Necessária para criar/editar senhas de outros usuários no Supabase Auth e consultas administrativas sem restrição RLS.',
+        'Não definida explicitamente. Usando chave derivada de DATABASE_URL (defina AUTH_SECRET no deploy para maior segurança).',
     });
     warnings.push(
-      'SUPABASE_SERVICE_ROLE_KEY (ou SUPABASE_SECRET_KEY) não está configurada: criação/redefinição de senhas de outros usuários e consultas administrativas podem ser limitadas.'
+      'Recomenda-se configurar AUTH_SECRET com ao menos 32 caracteres nas variáveis de ambiente do deploy.'
     );
-  } else if (isPlaceholderValue(serviceKey) || serviceKey.length < 20) {
+  } else if (authSecret.length < 16 || isPlaceholderValue(authSecret)) {
     checks.push({
-      name: serviceKeyVarName,
+      name: 'AUTH_SECRET',
       required: false,
       configured: true,
       valid: false,
-      issue: 'Chave Service Role / Secret Key inválida ou com valor de exemplo.',
+      issue: 'AUTH_SECRET muito curta ou com valor de exemplo (use ao menos 32 caracteres).',
     });
-    warnings.push(
-      'SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY parece inválida. Verifique o valor no painel Supabase.'
-    );
+    warnings.push('AUTH_SECRET parece fraca; defina uma chave aleatória de 32+ caracteres.');
   } else {
     checks.push({
-      name: serviceKeyVarName,
+      name: 'AUTH_SECRET',
       required: false,
       configured: true,
       valid: true,
@@ -201,13 +143,14 @@ export function validateSupabaseEnv(): EnvValidationResult {
     ok: missingRequired.length === 0,
     isProduction,
     environment,
-    supabaseUrl: url,
-    supabasePublicKey: publicKey,
-    supabaseServiceRoleKey: serviceKey,
-    supabaseHost,
+    databaseUrl,
+    databaseHost,
+    authSecretConfigured: Boolean(authSecret && authSecret.length >= 16),
     checks,
     missingRequired,
     warnings,
   };
 }
 
+// Compatibility aliases
+export const validateSupabaseEnv = validateDatabaseEnv;

@@ -1,11 +1,10 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import {
-  dbErrorResponse,
-  getServerDbContext,
-  insertWithSchemaFallback,
-} from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
+
+export const dynamic = 'force-dynamic';
 
 const createClassSchema = z.object({
   name: z.string().trim().min(2, 'Nome da turma é obrigatório'),
@@ -29,20 +28,19 @@ function normalizeClass(row: any) {
     room: row.room ?? undefined,
     capacity: row.capacity != null ? Number(row.capacity) : undefined,
     status: row.status === 'inactive' ? 'inactive' : 'active',
-    created_at: row.created_at ?? new Date().toISOString(),
+    created_at:
+      row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : (row.created_at ?? new Date().toISOString()),
   };
 }
 
 export async function GET() {
   try {
-    const { db } = await getServerDbContext();
-    const { data, error } = await db
-      .from('classes')
-      .select('*')
-      .order('name', { ascending: true });
-
-    if (error) return dbErrorResponse(error, 'turmas (classes)');
-    return NextResponse.json((data ?? []).map(normalizeClass));
+    const classes = await prisma.classRoom.findMany({
+      orderBy: { name: 'asc' },
+    });
+    return NextResponse.json(classes.map(normalizeClass));
   } catch (e: any) {
     return dbErrorResponse(e, 'turmas (classes)');
   }
@@ -50,9 +48,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_classes']);
+      await authorize(['manage_classes']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para cadastrar turmas' },
@@ -69,30 +66,20 @@ export async function POST(req: Request) {
       );
     }
 
-    const corePayload = {
-      name: parsed.data.name,
-      grade_level_id: parsed.data.grade_level_id,
-      school_id: parsed.data.school_id,
-    };
+    const created = await prisma.classRoom.create({
+      data: {
+        name: parsed.data.name,
+        grade_level_id: parsed.data.grade_level_id,
+        school_id: parsed.data.school_id,
+        shift: parsed.data.shift,
+        academic_year: parsed.data.academic_year,
+        room: parsed.data.room || null,
+        capacity: parsed.data.capacity,
+        status: parsed.data.status,
+      },
+    });
 
-    const fullPayload = {
-      ...corePayload,
-      shift: parsed.data.shift,
-      academic_year: parsed.data.academic_year,
-      ...(parsed.data.room ? { room: parsed.data.room } : {}),
-      capacity: parsed.data.capacity,
-      status: parsed.data.status,
-    };
-
-    const { data, error } = await insertWithSchemaFallback(
-      db,
-      'classes',
-      fullPayload,
-      corePayload
-    );
-
-    if (error) return dbErrorResponse(error, 'criação de turma');
-    return NextResponse.json(normalizeClass(data), { status: 201 });
+    return NextResponse.json(normalizeClass(created), { status: 201 });
   } catch (e: any) {
     return dbErrorResponse(e, 'criação de turma');
   }

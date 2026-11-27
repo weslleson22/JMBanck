@@ -1,108 +1,91 @@
 import { NextResponse } from 'next/server';
-import { authorize } from '@/lib/role';
-import { dbErrorResponse, getServerDbContext } from '@/lib/supabase-data';
+import { prisma } from '@/lib/prisma';
+import { getAuthenticatedUser } from '@/lib/role';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const { authClient, db } = await getServerDbContext();
+    let authUser;
     try {
-      await authorize(authClient, ['view_student_dashboard']);
-    } catch (authErr: any) {
+      authUser = await getAuthenticatedUser();
+    } catch (err: any) {
       return NextResponse.json(
-        { message: authErr?.message ?? 'Sem permissão para o painel do aluno' },
+        { message: err?.message ?? 'Conta bloqueada.' },
         { status: 403 }
       );
     }
 
-    const {
-      data: { user: authUser },
-    } = await authClient.auth.getUser();
-
     if (!authUser) {
-      return NextResponse.json({ message: 'Usuário não autenticado' }, { status: 401 });
+      return NextResponse.json({ message: 'Usuário não autenticado.' }, { status: 401 });
     }
 
-    const [
-      { data: users, error: uErr },
-      { data: students, error: sErr },
-      { data: classes, error: cErr },
-      { data: wallets, error: wErr },
-      { data: missions, error: mErr },
-    ] = await Promise.all([
-      db.from('users').select('*'),
-      db.from('students').select('*'),
-      db.from('classes').select('id, name'),
-      db.from('wallets').select('*'),
-      db.from('missions').select('*'),
-    ]);
+    // Resolve student record linked to the logged-in user (or fallback to first student for super_admin preview)
+    let student = await prisma.student.findFirst({
+      where: {
+        OR: [{ user_id: authUser.id }, { email: authUser.email }],
+      },
+      include: {
+        classRoom: { select: { id: true, name: true } },
+        wallet: true,
+      },
+    });
 
-    const firstErr = uErr || sErr || cErr || wErr || mErr;
-    if (firstErr) {
-      return dbErrorResponse(firstErr, 'painel do aluno');
+    if (!student && authUser.role === 'super_admin') {
+      student = await prisma.student.findFirst({
+        include: {
+          classRoom: { select: { id: true, name: true } },
+          wallet: true,
+        },
+        orderBy: { created_at: 'asc' },
+      });
     }
 
-    const profile = (users ?? []).find(
-      (u: any) =>
-        u.auth_uid === authUser.id ||
-        (authUser.email && u.email?.toLowerCase() === authUser.email.toLowerCase())
-    );
+    const missions = await prisma.mission.findMany({
+      where: { status: 'active' },
+      orderBy: { created_at: 'desc' },
+    });
 
-    const student =
-      (students ?? []).find(
-        (s: any) =>
-          (profile && s.user_id === profile.id) ||
-          s.user_id === authUser.id ||
-          (authUser.email && s.email?.toLowerCase() === authUser.email.toLowerCase())
-      ) ?? null;
-
-    const classMap = new Map((classes ?? []).map((c: any) => [c.id, c.name]));
-    const wallet = student
-      ? (wallets ?? []).find((w: any) => w.student_id === student.id) ?? null
-      : null;
-
-    // Real class ranking computed from classmates' wallets
     let rankPosition: number | null = null;
-    if (student) {
-      const classmates = (students ?? []).filter((s: any) => s.class_id === student.class_id);
-      const ranked = classmates
-        .map((s: any) => {
-          const w = (wallets ?? []).find((wl: any) => wl.student_id === s.id);
-          return { studentId: s.id, earned: Number(w?.total_earned ?? 0) };
-        })
-        .sort((a, b) => b.earned - a.earned);
-      const idx = ranked.findIndex((r) => r.studentId === student.id);
-      if (idx !== -1) rankPosition = idx + 1;
+    if (student?.class_id) {
+      const peers = await prisma.student.findMany({
+        where: { class_id: student.class_id },
+        include: { wallet: { select: { balance: true } } },
+      });
+      const sorted = peers
+        .map((p) => ({ id: p.id, balance: Number(p.wallet?.balance ?? 0) }))
+        .sort((a, b) => b.balance - a.balance);
+      const idx = sorted.findIndex((p) => p.id === student!.id);
+      if (idx >= 0) rankPosition = idx + 1;
     }
 
     return NextResponse.json({
       student: student
         ? {
             id: student.id,
-            name: student.name ?? profile?.name ?? authUser.user_metadata?.name ?? 'Estudante',
-            enrollment_number: student.enrollment_number ?? '',
+            name: student.name,
+            enrollment_number: student.enrollment_number,
             class_id: student.class_id ?? '',
-            class_name: classMap.get(student.class_id) ?? student.class_id ?? 'Sem turma',
+            class_name: student.classRoom?.name ?? 'Sem turma',
           }
         : {
-            id: profile?.id ?? authUser.id,
-            name: profile?.name ?? authUser.user_metadata?.name ?? authUser.email ?? 'Estudante',
-            enrollment_number: 'Não vinculado',
+            id: authUser.id,
+            name: authUser.name,
+            enrollment_number: '',
             class_id: '',
             class_name: 'Sem turma vinculada',
           },
       wallet: {
-        id: wallet?.id ?? null,
-        balance: Number(wallet?.balance ?? 0),
-        total_earned: Number(wallet?.total_earned ?? 0),
-        total_spent: Number(wallet?.total_spent ?? 0),
+        id: student?.wallet?.id ?? null,
+        balance: Number(student?.wallet?.balance ?? 0),
+        total_earned: Number(student?.wallet?.total_earned ?? 0),
+        total_spent: Number(student?.wallet?.total_spent ?? 0),
       },
       rankPosition,
-      missions: (missions ?? []).filter((m: any) => !m.status || m.status === 'active'),
+      missions,
     });
   } catch (e: any) {
-    return dbErrorResponse(e, 'painel do aluno');
+    return dbErrorResponse(e, 'dashboard do aluno');
   }
 }
-

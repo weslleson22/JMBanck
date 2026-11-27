@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import {
-  dbErrorResponse,
-  getServerDbContext,
-  updateWithSchemaFallback,
-} from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 const updateSchoolSchema = z.object({
   name: z.string().trim().min(2, 'Nome da escola é obrigatório').optional(),
@@ -25,7 +22,10 @@ function normalizeSchool(row: any) {
     academic_year: row.academic_year ? String(row.academic_year) : '2026',
     director_name: row.director_name ?? undefined,
     status: row.status === 'inactive' ? 'inactive' : 'active',
-    created_at: row.created_at ?? new Date().toISOString(),
+    created_at:
+      row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : (row.created_at ?? new Date().toISOString()),
   };
 }
 
@@ -35,13 +35,13 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const { db } = await getServerDbContext();
-    const { data, error } = await db.from('schools').select('*').eq('id', id).maybeSingle();
-    if (error) return dbErrorResponse(error, 'escola');
-    if (!data) return NextResponse.json({ message: 'Escola não encontrada' }, { status: 404 });
-    return NextResponse.json(normalizeSchool(data));
+    const found = await prisma.school.findUnique({ where: { id } });
+    if (!found) {
+      return NextResponse.json({ message: 'Escola não encontrada' }, { status: 404 });
+    }
+    return NextResponse.json(normalizeSchool(found));
   } catch (e: any) {
-    return dbErrorResponse(e, 'escola');
+    return dbErrorResponse(e, 'consulta de escola');
   }
 }
 
@@ -50,10 +50,8 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_schools', 'manage_school']);
+      await authorize(['manage_schools', 'manage_school']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para editar escolas' },
@@ -61,6 +59,7 @@ export async function PUT(
       );
     }
 
+    const { id } = await params;
     const body = await req.json();
     const parsed = updateSchoolSchema.safeParse(body);
     if (!parsed.success) {
@@ -70,29 +69,23 @@ export async function PUT(
       );
     }
 
-    const fullPayload: Record<string, any> = {};
-    if (parsed.data.name !== undefined) fullPayload.name = parsed.data.name;
-    if (parsed.data.code !== undefined) fullPayload.code = parsed.data.code || null;
-    if (parsed.data.city !== undefined) fullPayload.city = parsed.data.city || null;
-    if (parsed.data.academic_year !== undefined) fullPayload.academic_year = parsed.data.academic_year;
-    if (parsed.data.director_name !== undefined)
-      fullPayload.director_name = parsed.data.director_name || null;
-    if (parsed.data.status !== undefined) fullPayload.status = parsed.data.status;
+    const updated = await prisma.school.update({
+      where: { id },
+      data: {
+        ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.code !== undefined ? { code: parsed.data.code || null } : {}),
+        ...(parsed.data.city !== undefined ? { city: parsed.data.city || null } : {}),
+        ...(parsed.data.academic_year !== undefined
+          ? { academic_year: parsed.data.academic_year }
+          : {}),
+        ...(parsed.data.director_name !== undefined
+          ? { director_name: parsed.data.director_name || null }
+          : {}),
+        ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
+      },
+    });
 
-    const corePayload: Record<string, any> = {};
-    if (parsed.data.name !== undefined) corePayload.name = parsed.data.name;
-
-    const { data, error } = await updateWithSchemaFallback(
-      db,
-      'schools',
-      id,
-      fullPayload,
-      corePayload
-    );
-
-    if (error) return dbErrorResponse(error, 'atualização de escola');
-    if (!data) return NextResponse.json({ message: 'Escola não encontrada' }, { status: 404 });
-    return NextResponse.json(normalizeSchool(data));
+    return NextResponse.json(normalizeSchool(updated));
   } catch (e: any) {
     return dbErrorResponse(e, 'atualização de escola');
   }
@@ -105,10 +98,8 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_schools', 'manage_school']);
+      await authorize(['manage_schools', 'manage_school']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para excluir escolas' },
@@ -116,8 +107,8 @@ export async function DELETE(
       );
     }
 
-    const { error } = await db.from('schools').delete().eq('id', id);
-    if (error) return dbErrorResponse(error, 'exclusão de escola');
+    const { id } = await params;
+    await prisma.school.delete({ where: { id } });
     return NextResponse.json({ ok: true, id });
   } catch (e: any) {
     return dbErrorResponse(e, 'exclusão de escola');

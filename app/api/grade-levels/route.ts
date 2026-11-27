@@ -1,11 +1,10 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import {
-  dbErrorResponse,
-  getServerDbContext,
-  insertWithSchemaFallback,
-} from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
+
+export const dynamic = 'force-dynamic';
 
 const createGradeLevelSchema = z.object({
   name: z.string().trim().min(2, 'Nome da série é obrigatório'),
@@ -25,20 +24,19 @@ function normalizeGradeLevel(row: any) {
     description: row.description ?? undefined,
     status: row.status === 'inactive' ? 'inactive' : 'active',
     school_id: row.school_id ?? undefined,
-    created_at: row.created_at ?? new Date().toISOString(),
+    created_at:
+      row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : (row.created_at ?? new Date().toISOString()),
   };
 }
 
 export async function GET() {
   try {
-    const { db } = await getServerDbContext();
-    const { data, error } = await db
-      .from('grade_levels')
-      .select('*')
-      .order('order_index', { ascending: true });
-
-    if (error) return dbErrorResponse(error, 'séries (grade_levels)');
-    return NextResponse.json((data ?? []).map(normalizeGradeLevel));
+    const levels = await prisma.gradeLevel.findMany({
+      orderBy: { order_index: 'asc' },
+    });
+    return NextResponse.json(levels.map(normalizeGradeLevel));
   } catch (e: any) {
     return dbErrorResponse(e, 'séries (grade_levels)');
   }
@@ -46,9 +44,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_grade_levels']);
+      await authorize(['manage_grade_levels']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para cadastrar séries' },
@@ -65,34 +62,24 @@ export async function POST(req: Request) {
       );
     }
 
-    let schoolId = parsed.data.school_id;
+    let schoolId = parsed.data.school_id || null;
     if (!schoolId) {
-      const { data: firstSchool } = await db.from('schools').select('id').limit(1).maybeSingle();
-      schoolId = firstSchool?.id;
+      const firstSchool = await prisma.school.findFirst({ select: { id: true } });
+      schoolId = firstSchool?.id ?? null;
     }
 
-    const corePayload: Record<string, any> = {
-      name: parsed.data.name,
-      order_index: parsed.data.order_index,
-      ...(schoolId ? { school_id: schoolId } : {}),
-    };
+    const created = await prisma.gradeLevel.create({
+      data: {
+        school_id: schoolId,
+        name: parsed.data.name,
+        stage: parsed.data.stage,
+        order_index: parsed.data.order_index,
+        description: parsed.data.description || null,
+        status: parsed.data.status,
+      },
+    });
 
-    const fullPayload: Record<string, any> = {
-      ...corePayload,
-      stage: parsed.data.stage,
-      ...(parsed.data.description ? { description: parsed.data.description } : {}),
-      status: parsed.data.status,
-    };
-
-    const { data, error } = await insertWithSchemaFallback(
-      db,
-      'grade_levels',
-      fullPayload,
-      corePayload
-    );
-
-    if (error) return dbErrorResponse(error, 'criação de série');
-    return NextResponse.json(normalizeGradeLevel(data), { status: 201 });
+    return NextResponse.json(normalizeGradeLevel(created), { status: 201 });
   } catch (e: any) {
     return dbErrorResponse(e, 'criação de série');
   }

@@ -1,54 +1,61 @@
-import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
-import { getSupabasePublicKey, getSupabaseUrl } from './env';
+import { getDatabaseUrl } from './env';
+import { SESSION_COOKIE_NAME, verifySessionToken } from './auth-session';
+import { canAccessRoute, ROLE_HOME_PATH } from './client';
+import type { Role } from './role';
+
+const VALID_ROLES: Role[] = [
+  'super_admin',
+  'school_admin',
+  'coordinator',
+  'teacher',
+  'student',
+  'guardian',
+  'treasury',
+];
+
+function isPublicPath(pathname: string): boolean {
+  return (
+    pathname === '/login' ||
+    pathname.startsWith('/login/') ||
+    pathname.startsWith('/auth/') ||
+    pathname.startsWith('/api/')
+  );
+}
 
 export async function updateSession(request: NextRequest) {
-  let supabaseResponse = NextResponse.next({
-    request,
-  });
+  const { pathname } = request.nextUrl;
 
-  const supabaseUrl = getSupabaseUrl();
-  const supabaseKey = getSupabasePublicKey();
-  if (!supabaseUrl || !supabaseKey) {
-    return supabaseResponse;
+  if (isPublicPath(pathname)) {
+    return NextResponse.next();
   }
 
-  const supabase = createServerClient(supabaseUrl, supabaseKey, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
-      setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-        supabaseResponse = NextResponse.next({
-          request,
-        });
-        cookiesToSet.forEach(({ name, value, options }) =>
-          supabaseResponse.cookies.set(name, value, options)
-        );
-      },
-    },
-  });
-
-  let user: unknown = null;
-  try {
-    const { data } = await supabase.auth.getClaims();
-    user = data?.claims ?? null;
-  } catch {
-    user = null;
-  }
-
-  if (
-    !user &&
-    !request.nextUrl.pathname.startsWith('/login') &&
-    !request.nextUrl.pathname.startsWith('/auth') &&
-    !request.nextUrl.pathname.startsWith('/api') &&
-    request.nextUrl.pathname !== '/oauth/consent'
-  ) {
+  // If DATABASE_URL is missing, send user to /login to inspect env diagnostics
+  if (!getDatabaseUrl()) {
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     return NextResponse.redirect(url);
   }
 
-  return supabaseResponse;
+  const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  const session = verifySessionToken(token);
+
+  if (!session) {
+    const url = request.nextUrl.clone();
+    url.pathname = '/login';
+    if (pathname !== '/') {
+      url.searchParams.set('next', pathname);
+    }
+    return NextResponse.redirect(url);
+  }
+
+  // Server-side RBAC route enforcement using signed session role
+  if (VALID_ROLES.includes(session.role) && !canAccessRoute(session.role, pathname)) {
+    const url = request.nextUrl.clone();
+    url.pathname = ROLE_HOME_PATH[session.role] ?? '/dashboard';
+    url.search = '';
+    return NextResponse.redirect(url);
+  }
+
+  return NextResponse.next();
 }

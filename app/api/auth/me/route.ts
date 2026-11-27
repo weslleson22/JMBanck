@@ -1,8 +1,14 @@
 import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
 import { checkDatabaseHealth } from '@/lib/db-health';
-import { formatDbError, getServerDbContext } from '@/lib/supabase-data';
-import { SERVER_ROLE_HOME_PATH, SERVER_ROLE_LABELS } from '@/lib/users-db';
-import type { Role } from '@/lib/role';
+import { formatDbError } from '@/lib/prisma-errors';
+import { getSessionFromCookies, SESSION_COOKIE_NAME } from '@/lib/auth-session';
+import {
+  SERVER_ROLE_HOME_PATH,
+  SERVER_ROLE_LABELS,
+  VALID_ROLES,
+  type Role,
+} from '@/lib/role';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,39 +28,23 @@ export async function GET() {
       );
     }
 
-    const { authClient, db } = await getServerDbContext();
-    const {
-      data: { user: authUser },
-      error: authErr,
-    } = await authClient.auth.getUser();
-
-    if (authErr || !authUser) {
+    const session = await getSessionFromCookies();
+    if (!session?.sub) {
       return NextResponse.json({ authenticated: false }, { status: 401 });
     }
 
-    let profile: any = null;
-    const byAuthUid = await db
-      .from('users')
-      .select('*')
-      .eq('auth_uid', authUser.id)
-      .maybeSingle();
+    const dbUser = await prisma.user.findUnique({
+      where: { id: session.sub },
+    });
 
-    if (!byAuthUid.error && byAuthUid.data) {
-      profile = byAuthUid.data;
-    } else if (authUser.email) {
-      const byEmail = await db
-        .from('users')
-        .select('*')
-        .eq('email', authUser.email.toLowerCase())
-        .maybeSingle();
-      if (!byEmail.error && byEmail.data) {
-        profile = byEmail.data;
-      }
+    if (!dbUser) {
+      const res = NextResponse.json({ authenticated: false }, { status: 401 });
+      res.cookies.set(SESSION_COOKIE_NAME, '', { path: '/', maxAge: 0, httpOnly: true });
+      return res;
     }
 
-    if (profile?.status === 'blocked' || profile?.status === 'inactive') {
-      await authClient.auth.signOut();
-      return NextResponse.json(
+    if (dbUser.status === 'blocked' || dbUser.status === 'inactive') {
+      const res = NextResponse.json(
         {
           authenticated: false,
           code: 'USER_BLOCKED',
@@ -62,35 +52,25 @@ export async function GET() {
         },
         { status: 403 }
       );
+      res.cookies.set(SESSION_COOKIE_NAME, '', { path: '/', maxAge: 0, httpOnly: true });
+      return res;
     }
 
-    const validRoles: Role[] = [
-      'super_admin',
-      'school_admin',
-      'coordinator',
-      'teacher',
-      'student',
-      'guardian',
-      'treasury',
-    ];
-    const candidateRole = (profile?.role ?? authUser.user_metadata?.role ?? 'student') as Role;
-    const role: Role = validRoles.includes(candidateRole) ? candidateRole : 'student';
+    const role: Role = VALID_ROLES.includes(dbUser.role as Role)
+      ? (dbUser.role as Role)
+      : 'student';
 
-    const user = {
-      id: profile?.id ?? authUser.id,
-      auth_uid: authUser.id,
-      email: profile?.email ?? authUser.email ?? '',
-      name:
-        profile?.name ??
-        authUser.user_metadata?.name ??
-        authUser.email?.split('@')[0] ??
-        'Usuário',
-      role,
-      roleLabel: SERVER_ROLE_LABELS[role] ?? role,
-      dashboardPath: SERVER_ROLE_HOME_PATH[role] ?? '/dashboard',
-    };
-
-    return NextResponse.json({ authenticated: true, user });
+    return NextResponse.json({
+      authenticated: true,
+      user: {
+        id: dbUser.id,
+        email: dbUser.email,
+        name: dbUser.name,
+        role,
+        roleLabel: SERVER_ROLE_LABELS[role] ?? role,
+        dashboardPath: SERVER_ROLE_HOME_PATH[role] ?? '/dashboard',
+      },
+    });
   } catch (e: any) {
     const formatted = formatDbError(e, 'verificação de sessão');
     return NextResponse.json(
@@ -104,4 +84,3 @@ export async function GET() {
     );
   }
 }
-

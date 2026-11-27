@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { authorize } from '@/lib/role';
-import {
-  dbErrorResponse,
-  getServerDbContext,
-  insertWithSchemaFallback,
-} from '@/lib/supabase-data';
+import { prisma } from '@/lib/prisma';
+import { authorize, getAuthenticatedUser } from '@/lib/role';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,14 +20,15 @@ const redeemSchema = z.object({
 
 export async function GET() {
   try {
-    const { db } = await getServerDbContext();
-    const { data, error } = await db
-      .from('rewards')
-      .select('*')
-      .order('name', { ascending: true });
-
-    if (error) return dbErrorResponse(error, 'recompensas (rewards)');
-    return NextResponse.json(data ?? []);
+    const rewards = await prisma.reward.findMany({
+      orderBy: { name: 'asc' },
+    });
+    return NextResponse.json(
+      rewards.map((r) => ({
+        ...r,
+        price: Number(r.price),
+      }))
+    );
   } catch (e: any) {
     return dbErrorResponse(e, 'recompensas (rewards)');
   }
@@ -38,9 +36,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_rewards', 'manage_rewards_catalog']);
+      await authorize(['manage_rewards', 'manage_rewards_catalog']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para cadastrar recompensas' },
@@ -57,28 +54,18 @@ export async function POST(req: Request) {
       );
     }
 
-    const corePayload: Record<string, any> = {
-      name: parsed.data.name,
-      price: parsed.data.price,
-      stock: parsed.data.stock,
-      status: 'active',
-    };
+    const created = await prisma.reward.create({
+      data: {
+        name: parsed.data.name,
+        price: parsed.data.price,
+        stock: parsed.data.stock,
+        category_id: parsed.data.category_id ?? null,
+        image_path: parsed.data.image_path ?? null,
+        status: 'active',
+      },
+    });
 
-    const fullPayload: Record<string, any> = {
-      ...corePayload,
-      ...(parsed.data.category_id ? { category_id: parsed.data.category_id } : {}),
-      ...(parsed.data.image_path ? { image_path: parsed.data.image_path } : {}),
-    };
-
-    const { data, error } = await insertWithSchemaFallback(
-      db,
-      'rewards',
-      fullPayload,
-      corePayload
-    );
-
-    if (error) return dbErrorResponse(error, 'cadastro de recompensa');
-    return NextResponse.json(data, { status: 201 });
+    return NextResponse.json({ ...created, price: Number(created.price) }, { status: 201 });
   } catch (e: any) {
     return dbErrorResponse(e, 'cadastro de recompensa');
   }
@@ -86,10 +73,7 @@ export async function POST(req: Request) {
 
 export async function PATCH(req: Request) {
   try {
-    const { authClient, db } = await getServerDbContext();
-    const {
-      data: { user: authUser },
-    } = await authClient.auth.getUser();
+    const authUser = await getAuthenticatedUser();
     if (!authUser) {
       return NextResponse.json({ message: 'Usuário não autenticado' }, { status: 401 });
     }
@@ -100,31 +84,62 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ message: 'Recompensa inválida' }, { status: 400 });
     }
 
-    const { data: reward, error: findErr } = await db
-      .from('rewards')
-      .select('*')
-      .eq('id', parsed.data.reward_id)
-      .maybeSingle();
+    const result = await prisma.$transaction(async (tx) => {
+      const reward = await tx.reward.findUnique({ where: { id: parsed.data.reward_id } });
+      if (!reward) {
+        return { error: 'Recompensa não encontrada.', status: 404 as const };
+      }
+      if (reward.stock <= 0) {
+        return { error: 'Item sem estoque disponível.', status: 400 as const };
+      }
 
-    if (findErr) return dbErrorResponse(findErr, 'recompensa');
-    if (!reward) {
-      return NextResponse.json({ message: 'Recompensa não encontrada' }, { status: 404 });
+      // If logged-in user is a student, check balance & debit wallet atomically
+      if (authUser.role === 'student') {
+        const stu = await tx.student.findFirst({
+          where: { OR: [{ user_id: authUser.id }, { email: authUser.email }] },
+          include: { wallet: true },
+        });
+        const price = Number(reward.price);
+        if (stu?.wallet) {
+          const currentBalance = Number(stu.wallet.balance);
+          if (currentBalance < price) {
+            return {
+              error: `Saldo insuficiente (${currentBalance} JM$) para resgatar "${reward.name}" (${price} JM$).`,
+              status: 400 as const,
+            };
+          }
+          await tx.wallet.update({
+            where: { id: stu.wallet.id },
+            data: {
+              balance: currentBalance - price,
+              total_spent: Number(stu.wallet.total_spent) + price,
+            },
+          });
+          await tx.walletTransaction.create({
+            data: {
+              wallet_id: stu.wallet.id,
+              type: 'redeem',
+              amount: price,
+              description: `Resgate de recompensa: ${reward.name}`,
+              created_by: authUser.id,
+            },
+          });
+        }
+      }
+
+      const updated = await tx.reward.update({
+        where: { id: reward.id },
+        data: { stock: reward.stock - 1 },
+      });
+
+      return { reward: { ...updated, price: Number(updated.price) } };
+    });
+
+    if ('error' in result) {
+      return NextResponse.json({ message: result.error }, { status: result.status });
     }
 
-    const currentStock = Number(reward.stock ?? 0);
-    if (currentStock <= 0) {
-      return NextResponse.json({ message: 'Item sem estoque disponível.' }, { status: 400 });
-    }
-
-    const { data: updated, error: updErr } = await db
-      .from('rewards')
-      .update({ stock: currentStock - 1 })
-      .eq('id', reward.id)
-      .select()
-      .single();
-
-    if (updErr) return dbErrorResponse(updErr, 'resgate de recompensa');
-    return NextResponse.json(updated);
+    return NextResponse.json(result.reward);
   } catch (e: any) {
     return dbErrorResponse(e, 'resgate de recompensa');
   }

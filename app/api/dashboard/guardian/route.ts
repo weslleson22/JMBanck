@@ -1,68 +1,69 @@
 import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import { dbErrorResponse, getServerDbContext } from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const { authClient, db } = await getServerDbContext();
+    let authUser;
     try {
-      await authorize(authClient, ['view_guardian_dashboard']);
+      const res = await authorize(['view_guardian_dashboard', 'view_linked_students']);
+      authUser = res.user;
     } catch (authErr: any) {
       return NextResponse.json(
-        { message: authErr?.message ?? 'Sem permissão para o painel do responsável' },
+        { message: authErr?.message ?? 'Acesso não autorizado ao painel do responsável.' },
         { status: 403 }
       );
     }
 
-    const [
-      { data: students, error: sErr },
-      { data: users, error: uErr },
-      { data: classes, error: cErr },
-      { data: wallets, error: wErr },
-      { data: missions, error: mErr },
-    ] = await Promise.all([
-      db.from('students').select('*'),
-      db.from('users').select('id, name, email'),
-      db.from('classes').select('id, name'),
-      db.from('wallets').select('*'),
-      db.from('missions').select('*'),
-    ]);
-
-    const firstErr = sErr || uErr || cErr || wErr || mErr;
-    if (firstErr) {
-      return dbErrorResponse(firstErr, 'painel do responsável');
-    }
-
-    const userMap = new Map((users ?? []).map((u: any) => [u.id, u]));
-    const classMap = new Map((classes ?? []).map((c: any) => [c.id, c.name]));
-
-    const firstStudent = (students ?? [])[0] ?? null;
-    const studentUser = firstStudent?.user_id ? userMap.get(firstStudent.user_id) : null;
-    const studentWallet = firstStudent
-      ? (wallets ?? []).find((w: any) => w.student_id === firstStudent.id) ?? null
+    const firstName = authUser.name.split(' ')[0] ?? '';
+    let student = firstName
+      ? await prisma.student.findFirst({
+          where: {
+            guardian_name: { contains: firstName, mode: 'insensitive' },
+          },
+          include: {
+            classRoom: { select: { name: true } },
+            wallet: true,
+          },
+        })
       : null;
 
+    if (!student) {
+      student = await prisma.student.findFirst({
+        include: {
+          classRoom: { select: { name: true } },
+          wallet: true,
+        },
+        orderBy: { created_at: 'asc' },
+      });
+    }
+
+    const missions = await prisma.mission.findMany({
+      where: { status: 'active' },
+      orderBy: { created_at: 'desc' },
+    });
+
     return NextResponse.json({
-      student: firstStudent
+      student: student
         ? {
-            id: firstStudent.id,
-            name: firstStudent.name ?? studentUser?.name ?? `Matrícula ${firstStudent.enrollment_number}`,
-            enrollment_number: firstStudent.enrollment_number ?? '',
-            class_name: classMap.get(firstStudent.class_id) ?? firstStudent.class_id ?? 'Sem turma',
+            id: student.id,
+            name: student.name,
+            enrollment_number: student.enrollment_number,
+            class_name: student.classRoom?.name ?? 'Sem turma',
           }
         : null,
       wallet: {
-        balance: Number(studentWallet?.balance ?? 0),
-        total_earned: Number(studentWallet?.total_earned ?? 0),
-        total_spent: Number(studentWallet?.total_spent ?? 0),
+        balance: Number(student?.wallet?.balance ?? 0),
+        total_earned: Number(student?.wallet?.total_earned ?? 0),
+        total_spent: Number(student?.wallet?.total_spent ?? 0),
       },
-      activeMissionsCount: (missions ?? []).filter((m: any) => !m.status || m.status === 'active')
-        .length,
-      missions: missions ?? [],
+      activeMissionsCount: missions.length,
+      missions,
     });
   } catch (e: any) {
-    return dbErrorResponse(e, 'painel do responsável');
+    return dbErrorResponse(e, 'dashboard do responsável');
   }
 }

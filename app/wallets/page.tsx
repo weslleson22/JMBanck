@@ -159,7 +159,7 @@ export default function WalletsPage() {
                 <strong className="font-semibold text-slate-700">{activeWallet.class_name}</strong>
               </>
             ) : (
-              'Consulte saldos reais da tabela wallets no Supabase.'
+              'Consulte saldos reais da tabela wallets no PostgreSQL (Prisma).'
             )}
           </p>
         </div>
@@ -214,7 +214,7 @@ export default function WalletsPage() {
                   {activeWallet.balance.toLocaleString('pt-BR')} JM$
                 </p>
                 <p className="text-[11px] sm:text-xs text-blue-100/90 mt-2">
-                  Saldo sincronizado em tempo real no Supabase
+                  Saldo sincronizado em tempo real no PostgreSQL (Prisma)
                 </p>
               </CardContent>
             </Card>

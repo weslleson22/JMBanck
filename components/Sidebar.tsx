@@ -26,10 +26,10 @@ import {
   KeyRound,
 } from 'lucide-react';
 import {
-  supabaseClient,
   getStoredDemoUser,
   setStoredDemoUser,
   canAccessRoute,
+  ROLE_LABELS,
   type DemoUser,
 } from '@/lib/client';
 import type { Role } from '@/lib/role';
@@ -181,19 +181,19 @@ export default function Sidebar() {
         return;
       }
       try {
-        const supabase = supabaseClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (user) {
-          const userRole = (user.user_metadata?.role as Role) ?? 'student';
-          setCurrentUser({
-            id: user.id,
-            email: user.email ?? '',
-            name: user.user_metadata?.name ?? user.email?.split('@')[0] ?? 'Usuário',
+        const res = await fetch('/api/auth/me', { cache: 'no-store' });
+        const json = await res.json().catch(() => ({}));
+        if (res.ok && json?.authenticated && json?.user) {
+          const userRole = (json.user.role as Role) ?? 'student';
+          const verified: DemoUser = {
+            id: json.user.id,
+            email: json.user.email ?? '',
+            name: json.user.name ?? 'Usuário',
             role: userRole,
-            roleLabel: user.user_metadata?.role ?? 'Autenticado',
-          });
+            roleLabel: json.user.roleLabel ?? ROLE_LABELS[userRole] ?? 'Autenticado',
+          };
+          setCurrentUser(verified);
+          setStoredDemoUser(verified);
         } else {
           setCurrentUser(null);
         }
@@ -232,11 +232,6 @@ export default function Sidebar() {
     setStoredDemoUser(null);
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
-    } catch {
-      // ignore
-    }
-    try {
-      await supabaseClient().auth.signOut();
     } catch {
       // ignore
     }

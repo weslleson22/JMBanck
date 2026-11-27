@@ -1,93 +1,78 @@
 import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import { dbErrorResponse, getServerDbContext } from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['view_reports', 'view_indicators', 'manage_school']);
+      await authorize(['manage_schools', 'manage_school', 'view_indicators']);
     } catch (authErr: any) {
       return NextResponse.json(
-        { message: authErr?.message ?? 'Sem permissão para indicadores administrativos' },
+        { message: authErr?.message ?? 'Acesso não autorizado ao painel administrativo.' },
         { status: 403 }
       );
     }
 
     const [
-      { count: studentsCount, error: stuErr },
-      { count: teachersCount, error: teaErr },
-      { count: classesCount, error: clsErr },
-      { count: schoolsCount, error: schErr },
-      { data: wallets, error: walErr },
-      { count: missionsCount, error: misErr },
-      { count: rewardsCount, error: rewErr },
-      { data: classesData },
-      { data: studentsData },
+      totalSchools,
+      totalStudents,
+      totalTeachers,
+      totalClasses,
+      totalMissions,
+      totalRewards,
+      walletAgg,
+      classesWithStudents,
     ] = await Promise.all([
-      db.from('students').select('id', { count: 'exact', head: true }),
-      db.from('teachers').select('id', { count: 'exact', head: true }),
-      db.from('classes').select('id', { count: 'exact', head: true }),
-      db.from('schools').select('id', { count: 'exact', head: true }),
-      db.from('wallets').select('student_id, balance, total_earned, total_spent'),
-      db.from('missions').select('id', { count: 'exact', head: true }),
-      db.from('rewards').select('id', { count: 'exact', head: true }),
-      db.from('classes').select('id, name'),
-      db.from('students').select('id, class_id'),
+      prisma.school.count(),
+      prisma.student.count(),
+      prisma.teacher.count(),
+      prisma.classRoom.count(),
+      prisma.mission.count(),
+      prisma.reward.count(),
+      prisma.wallet.aggregate({
+        _sum: {
+          balance: true,
+          total_earned: true,
+          total_spent: true,
+        },
+      }),
+      prisma.classRoom.findMany({
+        include: {
+          students: {
+            include: {
+              wallet: { select: { balance: true } },
+            },
+          },
+        },
+      }),
     ]);
 
-    const firstErr = stuErr || teaErr || clsErr || schErr || walErr || misErr || rewErr;
-    if (firstErr) {
-      return dbErrorResponse(firstErr, 'indicadores administrativos');
-    }
+    const totalCoinsEmitted = Number(walletAgg._sum.total_earned ?? 0);
+    const totalCoinsRedeemed = Number(walletAgg._sum.total_spent ?? 0);
+    const totalCoinsBalance = Number(walletAgg._sum.balance ?? 0);
 
-    const totalCoinsEmitted = (wallets ?? []).reduce(
-      (sum: number, w: any) => sum + Number(w.total_earned ?? 0),
-      0
-    );
-    const totalCoinsRedeemed = (wallets ?? []).reduce(
-      (sum: number, w: any) => sum + Number(w.total_spent ?? 0),
-      0
-    );
-
-    // Compute real topClasses ranking from actual students & wallets in the database
-    const walletByStudent = new Map<string, number>();
-    for (const w of wallets ?? []) {
-      walletByStudent.set(w.student_id, Number(w.total_earned ?? 0));
-    }
-
-    const classTotals = new Map<string, { name: string; coins: number; students: number }>();
-    for (const c of classesData ?? []) {
-      classTotals.set(c.id, { name: c.name, coins: 0, students: 0 });
-    }
-    for (const s of studentsData ?? []) {
-      const bucket = classTotals.get(s.class_id);
-      if (bucket) {
-        bucket.students += 1;
-        bucket.coins += walletByStudent.get(s.id) ?? 0;
-      }
-    }
-
-    const topClasses = Array.from(classTotals.values())
-      .sort((a, b) => b.coins - a.coins || b.students - a.students)
-      .slice(0, 5)
-      .map((item) => ({
-        name: item.name,
-        studentsCount: item.students,
-        coins: item.coins,
-      }));
+    const topClasses = classesWithStudents
+      .map((cls) => ({
+        name: cls.name,
+        studentsCount: cls.students.length,
+        coins: cls.students.reduce((sum, s) => sum + Number(s.wallet?.balance ?? 0), 0),
+      }))
+      .sort((a, b) => b.coins - a.coins || b.studentsCount - a.studentsCount)
+      .slice(0, 6);
 
     return NextResponse.json({
-      totalSchools: schoolsCount ?? 0,
-      totalStudents: studentsCount ?? 0,
-      totalTeachers: teachersCount ?? 0,
-      totalClasses: classesCount ?? 0,
+      totalSchools,
+      totalStudents,
+      totalTeachers,
+      totalClasses,
       totalCoinsEmitted,
       totalCoinsRedeemed,
-      totalMissions: missionsCount ?? 0,
-      totalRewards: rewardsCount ?? 0,
+      totalCoinsBalance,
+      totalMissions,
+      totalRewards,
       topClasses,
     });
   } catch (e: any) {

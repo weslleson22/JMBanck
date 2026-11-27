@@ -1,55 +1,46 @@
 import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import { dbErrorResponse, getServerDbContext } from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['view_treasury_dashboard', 'manage_rewards']);
+      await authorize([
+        'view_treasury_dashboard',
+        'manage_rewards',
+        'manage_rewards_catalog',
+        'manage_school',
+      ]);
     } catch (authErr: any) {
       return NextResponse.json(
-        { message: authErr?.message ?? 'Sem permissão para o painel de tesouraria' },
+        { message: authErr?.message ?? 'Acesso não autorizado ao painel da tesouraria.' },
         { status: 403 }
       );
     }
 
-    const [{ data: rewards, error: rewErr }, { data: wallets, error: walErr }] =
-      await Promise.all([
-        db.from('rewards').select('*').order('name', { ascending: true }),
-        db.from('wallets').select('total_spent'),
-      ]);
+    const [rewards, walletAgg] = await Promise.all([
+      prisma.reward.findMany({ orderBy: { name: 'asc' } }),
+      prisma.wallet.aggregate({ _sum: { total_spent: true } }),
+    ]);
 
-    const firstErr = rewErr || walErr;
-    if (firstErr) {
-      return dbErrorResponse(firstErr, 'painel de tesouraria');
-    }
-
-    const items = rewards ?? [];
-    const totalRewards = items.length;
-    const totalStock = items.reduce((sum: number, r: any) => sum + Number(r.stock ?? 0), 0);
-    const outOfStockCount = items.filter((r: any) => Number(r.stock ?? 0) <= 0).length;
-    const totalCoinsRedeemed = (wallets ?? []).reduce(
-      (sum: number, w: any) => sum + Number(w.total_spent ?? 0),
-      0
-    );
+    const totalStock = rewards.reduce((acc, r) => acc + Number(r.stock ?? 0), 0);
+    const outOfStockCount = rewards.filter((r) => Number(r.stock ?? 0) <= 0).length;
+    const totalCoinsRedeemed = Number(walletAgg._sum.total_spent ?? 0);
 
     return NextResponse.json({
-      totalRewards,
+      totalRewards: rewards.length,
       totalStock,
       outOfStockCount,
       totalCoinsRedeemed,
-      rewards: items.map((r: any) => ({
-        id: r.id,
-        name: r.name,
-        price: Number(r.price ?? 0),
-        stock: Number(r.stock ?? 0),
-        status: r.status ?? 'active',
+      rewards: rewards.map((r) => ({
+        ...r,
+        price: Number(r.price),
       })),
     });
   } catch (e: any) {
-    return dbErrorResponse(e, 'painel de tesouraria');
+    return dbErrorResponse(e, 'dashboard da tesouraria');
   }
 }

@@ -1,14 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
 import { authorize } from '@/lib/role';
-import {
-  dbErrorResponse,
-  getServerDbContext,
-  updateWithSchemaFallback,
-} from '@/lib/supabase-data';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 const updateGradeLevelSchema = z.object({
-  name: z.string().trim().min(2, 'Nome da série é obrigatório').optional(),
+  name: z.string().trim().min(2).optional(),
   stage: z.string().trim().min(2).optional(),
   order_index: z.coerce.number().int().min(1).optional(),
   description: z.string().trim().optional(),
@@ -24,7 +21,10 @@ function normalizeGradeLevel(row: any) {
     description: row.description ?? undefined,
     status: row.status === 'inactive' ? 'inactive' : 'active',
     school_id: row.school_id ?? undefined,
-    created_at: row.created_at ?? new Date().toISOString(),
+    created_at:
+      row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : (row.created_at ?? new Date().toISOString()),
   };
 }
 
@@ -34,13 +34,13 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const { db } = await getServerDbContext();
-    const { data, error } = await db.from('grade_levels').select('*').eq('id', id).maybeSingle();
-    if (error) return dbErrorResponse(error, 'série');
-    if (!data) return NextResponse.json({ message: 'Série não encontrada' }, { status: 404 });
-    return NextResponse.json(normalizeGradeLevel(data));
+    const found = await prisma.gradeLevel.findUnique({ where: { id } });
+    if (!found) {
+      return NextResponse.json({ message: 'Série não encontrada' }, { status: 404 });
+    }
+    return NextResponse.json(normalizeGradeLevel(found));
   } catch (e: any) {
-    return dbErrorResponse(e, 'série');
+    return dbErrorResponse(e, 'consulta de série');
   }
 }
 
@@ -49,10 +49,8 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_grade_levels']);
+      await authorize(['manage_grade_levels']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para editar séries' },
@@ -60,6 +58,7 @@ export async function PUT(
       );
     }
 
+    const { id } = await params;
     const body = await req.json();
     const parsed = updateGradeLevelSchema.safeParse(body);
     if (!parsed.success) {
@@ -69,30 +68,20 @@ export async function PUT(
       );
     }
 
-    const corePayload: Record<string, any> = {};
-    if (parsed.data.name !== undefined) corePayload.name = parsed.data.name;
-    if (parsed.data.order_index !== undefined) corePayload.order_index = parsed.data.order_index;
+    const updated = await prisma.gradeLevel.update({
+      where: { id },
+      data: {
+        ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.stage !== undefined ? { stage: parsed.data.stage } : {}),
+        ...(parsed.data.order_index !== undefined ? { order_index: parsed.data.order_index } : {}),
+        ...(parsed.data.description !== undefined
+          ? { description: parsed.data.description || null }
+          : {}),
+        ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
+      },
+    });
 
-    const fullPayload: Record<string, any> = {
-      ...corePayload,
-      ...(parsed.data.stage !== undefined ? { stage: parsed.data.stage } : {}),
-      ...(parsed.data.description !== undefined
-        ? { description: parsed.data.description || null }
-        : {}),
-      ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
-    };
-
-    const { data, error } = await updateWithSchemaFallback(
-      db,
-      'grade_levels',
-      id,
-      fullPayload,
-      corePayload
-    );
-
-    if (error) return dbErrorResponse(error, 'atualização de série');
-    if (!data) return NextResponse.json({ message: 'Série não encontrada' }, { status: 404 });
-    return NextResponse.json(normalizeGradeLevel(data));
+    return NextResponse.json(normalizeGradeLevel(updated));
   } catch (e: any) {
     return dbErrorResponse(e, 'atualização de série');
   }
@@ -105,10 +94,8 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
-    const { authClient, db } = await getServerDbContext();
     try {
-      await authorize(authClient, ['manage_grade_levels']);
+      await authorize(['manage_grade_levels']);
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para excluir séries' },
@@ -116,8 +103,8 @@ export async function DELETE(
       );
     }
 
-    const { error } = await db.from('grade_levels').delete().eq('id', id);
-    if (error) return dbErrorResponse(error, 'exclusão de série');
+    const { id } = await params;
+    await prisma.gradeLevel.delete({ where: { id } });
     return NextResponse.json({ ok: true, id });
   } catch (e: any) {
     return dbErrorResponse(e, 'exclusão de série');

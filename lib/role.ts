@@ -1,5 +1,5 @@
-import { createClient as createSupabaseAdmin } from '@supabase/supabase-js';
-import { getSupabaseServiceRoleKey, getSupabaseUrl } from './env';
+import { prisma } from './prisma';
+import { getSessionFromCookies } from './auth-session';
 
 export type Role =
   | 'super_admin'
@@ -9,6 +9,36 @@ export type Role =
   | 'student'
   | 'guardian'
   | 'treasury';
+
+export const VALID_ROLES: Role[] = [
+  'super_admin',
+  'school_admin',
+  'coordinator',
+  'teacher',
+  'student',
+  'guardian',
+  'treasury',
+];
+
+export const SERVER_ROLE_LABELS: Record<Role, string> = {
+  super_admin: 'Super Administrador',
+  school_admin: 'Diretor / Admin Escolar',
+  coordinator: 'Coordenador Pedagógico',
+  teacher: 'Professor',
+  student: 'Aluno',
+  guardian: 'Responsável',
+  treasury: 'Operador / Tesouraria',
+};
+
+export const SERVER_ROLE_HOME_PATH: Record<Role, string> = {
+  super_admin: '/dashboard/admin',
+  school_admin: '/dashboard/admin',
+  coordinator: '/dashboard/teacher',
+  teacher: '/dashboard/teacher',
+  student: '/dashboard/student',
+  guardian: '/dashboard/guardian',
+  treasury: '/dashboard/treasury',
+};
 
 /** Permissions map – each role lists the actions it can perform. */
 export const rolePermissions: Record<Role, string[]> = {
@@ -42,9 +72,14 @@ export const rolePermissions: Record<Role, string[]> = {
     'view_treasury_dashboard',
     'view_student_dashboard',
     'view_guardian_dashboard',
+    'grant_coins',
+    'create_activities',
+    'create_pedagogical_challenges',
+    'manage_rewards_catalog',
   ],
   school_admin: [
     'manage_school',
+    'manage_schools',
     'manage_users',
     'manage_grade_levels',
     'manage_classes',
@@ -56,6 +91,7 @@ export const rolePermissions: Record<Role, string[]> = {
     'create_campaigns',
     'view_reports',
     'manage_rewards',
+    'manage_rewards_catalog',
     'manage_academic_years',
     'manage_shifts',
     'manage_subjects',
@@ -68,6 +104,9 @@ export const rolePermissions: Record<Role, string[]> = {
     'view_treasury_dashboard',
     'view_student_dashboard',
     'view_guardian_dashboard',
+    'grant_coins',
+    'create_activities',
+    'create_pedagogical_challenges',
   ],
   coordinator: [
     'view_assigned_classes',
@@ -122,72 +161,78 @@ export const rolePermissions: Record<Role, string[]> = {
     'approve_redemptions',
     'record_deliveries',
     'view_movements',
+    'view_wallets',
     'generate_redemption_reports',
     'view_treasury_dashboard',
   ],
 };
 
-/** Verify that the current Supabase Auth user has at least one of the required permissions. */
-export async function authorize(
-  supabase: any,
-  requiredPermissions: string[],
-): Promise<Role> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+export interface AuthenticatedDbUser {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  status: string;
+  school_id: string | null;
+}
 
+/**
+ * Loads and validates the current authenticated user from the signed session cookie
+ * AND verifies live status/role in PostgreSQL via Prisma.
+ */
+export async function getAuthenticatedUser(): Promise<AuthenticatedDbUser | null> {
+  const session = await getSessionFromCookies();
+  if (!session?.sub) return null;
+
+  const user = await prisma.user.findUnique({
+    where: { id: session.sub },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      status: true,
+      school_id: true,
+    },
+  });
+
+  if (!user) return null;
+  if (user.status === 'blocked' || user.status === 'inactive') {
+    throw new Error('Account blocked');
+  }
+
+  const role: Role = VALID_ROLES.includes(user.role as Role) ? (user.role as Role) : 'student';
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role,
+    status: user.status,
+    school_id: user.school_id,
+  };
+}
+
+/**
+ * Verify that the current authenticated Prisma user has at least one required permission.
+ */
+export async function authorize(requiredPermissions: string[]): Promise<{
+  user: AuthenticatedDbUser;
+  role: Role;
+}> {
+  const user = await getAuthenticatedUser();
   if (!user) {
     throw new Error('Unauthenticated');
   }
 
-  let role: Role | null = null;
-
-  // Prefer service role client for reading `users` table if configured so RLS never hides own role
-  const url = getSupabaseUrl();
-  const serviceKey = getSupabaseServiceRoleKey();
-  const lookupClient =
-    url && serviceKey
-      ? createSupabaseAdmin(url, serviceKey, {
-          auth: { autoRefreshToken: false, persistSession: false },
-        })
-      : supabase;
-
-  const { data: profileByUid } = await lookupClient
-    .from('users')
-    .select('role, status')
-    .eq('auth_uid', user.id)
-    .maybeSingle();
-
-  let profile = profileByUid;
-  if (!profile && user.email) {
-    const { data: profileByEmail } = await lookupClient
-      .from('users')
-      .select('role, status')
-      .eq('email', user.email.toLowerCase())
-      .maybeSingle();
-    profile = profileByEmail;
+  if (user.role === 'super_admin' || requiredPermissions.length === 0) {
+    return { user, role: user.role };
   }
 
-  if (profile?.status === 'blocked' || profile?.status === 'inactive') {
-    throw new Error('Account blocked');
-  }
-
-  if (profile?.role) {
-    role = profile.role as Role;
-  } else if (user.user_metadata?.role) {
-    role = user.user_metadata.role as Role;
-  }
-
-  if (!role) {
-    throw new Error('Unauthenticated');
-  }
-
-  if (role === 'super_admin') {
-    return role;
-  }
-
-  const allowed = rolePermissions[role] ?? [];
+  const allowed = rolePermissions[user.role] ?? [];
   const has = requiredPermissions.some((p) => allowed.includes(p));
-  if (!has) throw new Error('Permission denied');
-  return role;
+  if (!has) {
+    throw new Error('Permission denied');
+  }
+
+  return { user, role: user.role };
 }

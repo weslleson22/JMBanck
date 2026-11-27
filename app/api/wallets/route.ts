@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { authorize } from '@/lib/role';
-import { dbErrorResponse, getServerDbContext } from '@/lib/supabase-data';
+import { prisma } from '@/lib/prisma';
+import { authorize, getAuthenticatedUser } from '@/lib/role';
+import { dbErrorResponse } from '@/lib/prisma-errors';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,70 +15,57 @@ const transactionSchema = z.object({
 
 export async function GET() {
   try {
-    const { authClient, db } = await getServerDbContext();
-    const {
-      data: { user: authUser },
-    } = await authClient.auth.getUser();
-
+    let authUser;
+    try {
+      authUser = await getAuthenticatedUser();
+    } catch (err: any) {
+      return NextResponse.json({ message: err?.message ?? 'Conta bloqueada' }, { status: 403 });
+    }
     if (!authUser) {
       return NextResponse.json({ message: 'Usuário não autenticado' }, { status: 401 });
     }
 
-    const [
-      { data: wallets, error: wErr },
-      { data: students, error: sErr },
-      { data: users, error: uErr },
-      { data: classes, error: cErr },
-    ] = await Promise.all([
-      db.from('wallets').select('*'),
-      db.from('students').select('*'),
-      db.from('users').select('id, auth_uid, name, email, role'),
-      db.from('classes').select('id, name'),
-    ]);
+    const whereClause =
+      authUser.role === 'student'
+        ? {
+            OR: [{ user_id: authUser.id }, { email: authUser.email }],
+          }
+        : undefined;
 
-    const firstErr = wErr || sErr || uErr || cErr;
-    if (firstErr) return dbErrorResponse(firstErr, 'carteiras (wallets)');
-
-    const userMap = new Map<string, any>();
-    for (const u of users ?? []) {
-      userMap.set(u.id, u);
-      if (u.auth_uid) userMap.set(u.auth_uid, u);
-    }
-    const classMap = new Map((classes ?? []).map((c: any) => [c.id, c.name]));
-
-    const currentProfile = (users ?? []).find(
-      (u: any) =>
-        u.auth_uid === authUser.id ||
-        (authUser.email && u.email?.toLowerCase() === authUser.email.toLowerCase())
-    );
-    const currentRole = currentProfile?.role ?? authUser.user_metadata?.role ?? 'student';
-
-    const walletByStudent = new Map((wallets ?? []).map((w: any) => [w.student_id, w]));
-
-    let targetStudents = students ?? [];
-    if (currentRole === 'student') {
-      targetStudents = targetStudents.filter(
-        (s: any) =>
-          (currentProfile && s.user_id === currentProfile.id) ||
-          s.user_id === authUser.id ||
-          (authUser.email && s.email?.toLowerCase() === authUser.email.toLowerCase())
-      );
-    }
-
-    const enriched = targetStudents.map((s: any) => {
-      const u = s.user_id ? userMap.get(s.user_id) : null;
-      const w = walletByStudent.get(s.id);
-      return {
-        wallet_id: w?.id ?? null,
-        student_id: s.id,
-        student_name: s.name ?? u?.name ?? `Matrícula ${s.enrollment_number}`,
-        enrollment_number: s.enrollment_number ?? '',
-        class_name: classMap.get(s.class_id) ?? s.class_id ?? 'Sem turma',
-        balance: Number(w?.balance ?? 0),
-        total_earned: Number(w?.total_earned ?? 0),
-        total_spent: Number(w?.total_spent ?? 0),
-      };
+    const students = await prisma.student.findMany({
+      where: whereClause,
+      include: {
+        user: { select: { name: true } },
+        classRoom: { select: { name: true } },
+        wallet: {
+          include: {
+            transactions: {
+              orderBy: { created_at: 'desc' },
+              take: 15,
+            },
+          },
+        },
+      },
+      orderBy: { name: 'asc' },
     });
+
+    const enriched = students.map((s) => ({
+      wallet_id: s.wallet?.id ?? null,
+      student_id: s.id,
+      student_name: s.name ?? s.user?.name ?? `Matrícula ${s.enrollment_number}`,
+      enrollment_number: s.enrollment_number,
+      class_name: s.classRoom?.name ?? s.class_id ?? 'Sem turma',
+      balance: Number(s.wallet?.balance ?? 0),
+      total_earned: Number(s.wallet?.total_earned ?? 0),
+      total_spent: Number(s.wallet?.total_spent ?? 0),
+      transactions: (s.wallet?.transactions ?? []).map((tx) => ({
+        id: tx.id,
+        type: tx.type,
+        amount: Number(tx.amount),
+        description: tx.description,
+        created_at: tx.created_at.toISOString(),
+      })),
+    }));
 
     return NextResponse.json(enriched);
   } catch (e: any) {
@@ -87,9 +75,10 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const { authClient, db } = await getServerDbContext();
+    let callerId: string;
     try {
-      await authorize(authClient, ['grant_coins', 'manage_school', 'view_wallets']);
+      const auth = await authorize(['grant_coins', 'manage_school', 'view_wallets']);
+      callerId = auth.user.id;
     } catch (authErr: any) {
       return NextResponse.json(
         { message: authErr?.message ?? 'Sem permissão para movimentar carteiras' },
@@ -106,60 +95,56 @@ export async function POST(req: Request) {
       );
     }
 
-    const { student_id, type, amount } = parsed.data;
+    const { student_id, type, amount, description } = parsed.data;
     const isReversal = type === 'reversal';
 
-    const { data: existingWallet, error: findErr } = await db
-      .from('wallets')
-      .select('*')
-      .eq('student_id', student_id)
-      .maybeSingle();
+    const savedWallet = await prisma.$transaction(async (tx) => {
+      const existing = await tx.wallet.findUnique({ where: { student_id } });
+      const prevBalance = Number(existing?.balance ?? 0);
+      const prevEarned = Number(existing?.total_earned ?? 0);
+      const prevSpent = Number(existing?.total_spent ?? 0);
 
-    if (findErr) return dbErrorResponse(findErr, 'consulta de carteira');
+      const nextBalance = isReversal ? Math.max(0, prevBalance - amount) : prevBalance + amount;
+      const nextEarned = isReversal ? prevEarned : prevEarned + amount;
+      const nextSpent = isReversal ? prevSpent + amount : prevSpent;
 
-    const prevBalance = Number(existingWallet?.balance ?? 0);
-    const prevEarned = Number(existingWallet?.total_earned ?? 0);
-    const prevSpent = Number(existingWallet?.total_spent ?? 0);
+      const wallet = existing
+        ? await tx.wallet.update({
+            where: { id: existing.id },
+            data: {
+              balance: nextBalance,
+              total_earned: nextEarned,
+              total_spent: nextSpent,
+            },
+          })
+        : await tx.wallet.create({
+            data: {
+              student_id,
+              balance: nextBalance,
+              total_earned: nextEarned,
+              total_spent: nextSpent,
+            },
+          });
 
-    const nextBalance = isReversal ? Math.max(0, prevBalance - amount) : prevBalance + amount;
-    const nextEarned = isReversal ? prevEarned : prevEarned + amount;
-    const nextSpent = isReversal ? prevSpent + amount : prevSpent;
+      await tx.walletTransaction.create({
+        data: {
+          wallet_id: wallet.id,
+          type,
+          amount,
+          description,
+          created_by: callerId,
+        },
+      });
 
-    let savedWallet: any = null;
-    if (existingWallet) {
-      const { data, error } = await db
-        .from('wallets')
-        .update({
-          balance: nextBalance,
-          total_earned: nextEarned,
-          total_spent: nextSpent,
-        })
-        .eq('id', existingWallet.id)
-        .select()
-        .single();
-      if (error) return dbErrorResponse(error, 'atualização de carteira');
-      savedWallet = data;
-    } else {
-      const { data, error } = await db
-        .from('wallets')
-        .insert({
-          student_id,
-          balance: nextBalance,
-          total_earned: nextEarned,
-          total_spent: nextSpent,
-        })
-        .select()
-        .single();
-      if (error) return dbErrorResponse(error, 'criação de carteira');
-      savedWallet = data;
-    }
+      return wallet;
+    });
 
     return NextResponse.json({
       wallet_id: savedWallet.id,
       student_id,
-      balance: Number(savedWallet.balance ?? nextBalance),
-      total_earned: Number(savedWallet.total_earned ?? nextEarned),
-      total_spent: Number(savedWallet.total_spent ?? nextSpent),
+      balance: Number(savedWallet.balance),
+      total_earned: Number(savedWallet.total_earned),
+      total_spent: Number(savedWallet.total_spent),
     });
   } catch (e: any) {
     return dbErrorResponse(e, 'movimentação de carteira');
